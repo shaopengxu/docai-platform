@@ -280,16 +280,15 @@ def _parse_docx(file_path: str) -> ParsedDocument:
     # 追踪当前章节栈
     section_stack: list[Section] = []
 
+    # Pre-map elements to their wrapper objects to avoid O(N^2) traversal
+    para_map = {p._element: p for p in doc.paragraphs}
+    table_map = {tbl._element: tbl for tbl in doc.tables}
+
     for element in doc.element.body:
         tag = element.tag.split("}")[-1] if "}" in element.tag else element.tag
 
         if tag == "p":
-            # 段落
-            para = None
-            for p in doc.paragraphs:
-                if p._element is element:
-                    para = p
-                    break
+            para = para_map.get(element)
             if para is None:
                 continue
 
@@ -337,19 +336,18 @@ def _parse_docx(file_path: str) -> ParsedDocument:
 
         elif tag == "tbl":
             # 表格
-            for tbl in doc.tables:
-                if tbl._element is element:
-                    md_table = _docx_table_to_markdown(tbl)
-                    if md_table:
-                        section_path = ""
-                        if section_stack:
-                            section_path = section_stack[-1].title
-                        tables.append(TableData(
-                            content=md_table,
-                            section_path=section_path,
-                        ))
-                        raw_parts.append(md_table)
-                    break
+            tbl = table_map.get(element)
+            if tbl is not None:
+                md_table = _docx_table_to_markdown(tbl)
+                if md_table:
+                    section_path = ""
+                    if section_stack:
+                        section_path = section_stack[-1].title
+                    tables.append(TableData(
+                        content=md_table,
+                        section_path=section_path,
+                    ))
+                    raw_parts.append(md_table)
 
     # 如果没有识别到章节结构，按固定段落数分块
     if not sections or (len(sections) == 1 and not sections[0].title):
@@ -470,33 +468,70 @@ def _fallback_sections_from_text(text: str, lines_per_section: int = 30) -> list
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _parse_doc(file_path: str) -> ParsedDocument:
-    """解析旧版 .doc 文件"""
-    # 尝试使用 docling
+    """解析旧版 .doc 文件 (多级 fallback)"""
+    import subprocess
+    import shutil
+    import tempfile
+    
+    doc_stem = Path(file_path).stem
+    
+    # Strategy 1: LibreOffice (soffice) -> docx
+    if shutil.which("soffice"):
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                result = subprocess.run(
+                    ["soffice", "--headless", "--convert-to", "docx", "--outdir", tmpdir, file_path],
+                    capture_output=True, timeout=60
+                )
+                if result.returncode == 0:
+                    docx_path = os.path.join(tmpdir, f"{doc_stem}.docx")
+                    if os.path.exists(docx_path):
+                        logger.info("Parsed .doc using LibreOffice (soffice)", file_path=file_path)
+                        return _parse_docx(docx_path)
+        except Exception as e:
+            logger.warning("LibreOffice fall back failed", error=str(e))
+            
+    # Strategy 2: macOS textutil -> docx
+    if shutil.which("textutil"):
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                docx_path = os.path.join(tmpdir, f"{doc_stem}.docx")
+                result = subprocess.run(
+                    ["textutil", "-convert", "docx", "-output", docx_path, file_path],
+                    capture_output=True, timeout=60
+                )
+                if result.returncode == 0 and os.path.exists(docx_path):
+                    logger.info("Parsed .doc using macOS textutil", file_path=file_path)
+                    return _parse_docx(docx_path)
+        except Exception as e:
+            logger.warning("macOS textutil fall back failed", error=str(e))
+            
+    # Strategy 3: Antiword -> txt
+    if shutil.which("antiword"):
+        try:
+            result = subprocess.run(
+                ["antiword", file_path],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                logger.info("Parsed .doc using antiword", file_path=file_path)
+                text = result.stdout
+                sections = _fallback_sections_from_text(text)
+                return ParsedDocument(
+                    title=doc_stem,
+                    sections=sections,
+                    raw_text=text,
+                )
+        except Exception as e:
+            logger.warning("Antiword fall back failed", error=str(e))
+
+    # Strategy 4: Final fallback -> docling
+    logger.info("All local .doc parsers failed or missing, falling back to docling", file_path=file_path)
     try:
         return _parse_with_docling(file_path)
     except Exception as e:
-        logger.warning("Docling failed for .doc, trying antiword", error=str(e))
-
-    # fallback: 用 antiword 或其他系统命令
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["textutil", "-convert", "txt", "-stdout", file_path],
-            capture_output=True, text=True, timeout=60
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            text = result.stdout
-            sections = _fallback_sections_from_text(text)
-            return ParsedDocument(
-                title=Path(file_path).stem,
-                sections=sections,
-                raw_text=text,
-            )
-    except Exception:
-        pass
-
-    # 最后 fallback: 用 docling
-    return _parse_with_docling(file_path)
+        logger.error("Docling failed for .doc", error=str(e))
+        raise  # Bubble up if basically nothing worked
 
 
 # ═══════════════════════════════════════════════════════════════════════════
