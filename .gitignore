@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data & Models (not committed to git)
+tests/test_docs/*.pdf
+tests/test_docs/*.docx
+tests/test_docs/*.pptx
+tests/test_docs/*.xlsx
+models/
+
+# Docker volumes
+docker/*/data/
+
+# Logs
+*.log
+logs/
