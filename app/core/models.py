@@ -98,6 +98,8 @@ class Chunk(BaseModel):
     chunk_type: ChunkType = ChunkType.TEXT
     content: str = ""
     token_count: int = 0
+    group_id: str | None = None
+    department: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -196,4 +198,6 @@ class RetrievedChunk(BaseModel):
     chunk_index: int = 0
     chunk_type: str = "text"
     content: str = ""
+    group_id: str | None = None
+    department: str | None = None
     score: float = 0.0           # 检索/重排得分

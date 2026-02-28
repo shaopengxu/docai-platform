@@ -7,7 +7,8 @@ API_BASE = "http://localhost:8000/api/v1"
 
 async def main():
     print("Testing Phase 2 Flow...")
-    async with httpx.AsyncClient() as client:
+    # Increase timeout because CPU embedding/reranking takes ~60s
+    async with httpx.AsyncClient(timeout=120.0) as client:
         # 1. Create a document group
         print("1. Creating Document Group...")
         group_name = "Test Group " + str(uuid.uuid4())[:6]

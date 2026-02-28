@@ -305,6 +305,52 @@ async def update_document_metadata(doc_id: str, update_data: DocumentUpdate):
                 text(f"UPDATE documents SET {set_clause} WHERE doc_id = :doc_id"),
                 params,
             )
+            
+            # Fetch all chunk IDs for this document to update them in vector db
+            chunk_ids_res = await session.execute(
+                text("SELECT chunk_id FROM chunks WHERE doc_id = :doc_id"),
+                {"doc_id": doc_id}
+            )
+            chunk_ids = [str(row[0]) for row in chunk_ids_res.fetchall()]
+
+    # Push updates to Elasticsearch and Qdrant
+    if chunk_ids and (update_data.group_id is not None or update_data.department is not None):
+        try:
+            from app.core.infrastructure import get_es_client, get_qdrant_client
+            from qdrant_client.models import PointIdsList
+            
+            # Update Elasticsearch
+            es = get_es_client()
+            es_body = {"doc": {}}
+            if update_data.group_id is not None:
+                es_body["doc"]["group_id"] = update_data.group_id
+            if update_data.department is not None:
+                es_body["doc"]["department"] = update_data.department
+
+            for c_id in chunk_ids:
+                try:
+                    await es.update(index=settings.es_index_name, id=c_id, body=es_body)
+                except Exception as e:
+                    logger.warning(f"Failed to update ES doc {c_id}", error=str(e))
+            
+            await es.indices.refresh(index=settings.es_index_name)
+
+            # Update Qdrant payloads
+            qd = get_qdrant_client()
+            qd_payload = {}
+            if update_data.group_id is not None:
+                qd_payload["group_id"] = update_data.group_id
+            if update_data.department is not None:
+                qd_payload["department"] = update_data.department
+                
+            await qd.set_payload(
+                collection_name=settings.qdrant_collection_name,
+                payload=qd_payload,
+                points=PointIdsList(points=chunk_ids)
+            )
+            logger.info("Metadata synced to vector stores", doc_id=doc_id, chunks=len(chunk_ids))
+        except Exception as e:
+            logger.error("Failed to sync vector db metadata", doc_id=doc_id, error=str(e))
 
     return await get_document(doc_id)
 

@@ -464,6 +464,8 @@ class IngestionPipeline:
                     "chunk_type": chunk.chunk_type.value,
                     "content": chunk.content,
                     "token_count": chunk.token_count,
+                    "group_id": chunk.group_id,
+                    "department": chunk.department,
                     "is_latest": True,  # Phase 3 版本管理用
                 },
             )
@@ -503,6 +505,8 @@ class IngestionPipeline:
                 "chunk_type": chunk.chunk_type.value,
                 "content": chunk.content,
                 "token_count": chunk.token_count,
+                "group_id": chunk.group_id,
+                "department": chunk.department,
                 "is_latest": True,
                 "created_at": datetime.utcnow().isoformat(),
             }
