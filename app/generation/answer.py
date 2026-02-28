@@ -149,6 +149,148 @@ async def generate_answer(
     )
 
 
+async def cross_document_summary(
+    question: str,
+    retrieved_chunks: list[RetrievedChunk],
+) -> QueryResponse:
+    """
+    跨文档总结核心流程 (Map-Reduce)
+    """
+    if not retrieved_chunks:
+        return QueryResponse(
+            answer="抱歉，未在文档库中找到与您问题相关的信息。",
+            citations=[],
+            confidence=0.0,
+        )
+
+    # Step 1: 按文档分组
+    chunks_by_doc = _group_by_document(retrieved_chunks)
+    
+    # Step 2: Map —— 对每个文档提取与问题相关的要点
+    import asyncio
+    
+    async def process_doc(doc_id, chunks):
+        doc_title = chunks[0].doc_title
+        context = _build_context(chunks, max_tokens=6000)
+        
+        map_prompt = f"""用户问题：{question}
+
+以下是来自《{doc_title}》的相关内容：
+{context}
+
+请提取与用户问题直接相关的要点（3-5条），每条附带来源章节或页码。
+如果该文档与问题不太相关，请直接回复"无相关内容"。"""
+        
+        extract = await llm.generate(map_prompt, temperature=0.1)
+        if "无相关内容" not in extract:
+            return {
+                "doc_title": doc_title,
+                "doc_id": doc_id,
+                "extract": extract
+            }
+        return None
+
+    tasks = [process_doc(d, c) for d, c in chunks_by_doc.items()]
+    map_results = await asyncio.gather(*tasks)
+    
+    doc_extracts = [r for r in map_results if r is not None]
+
+    if not doc_extracts:
+        return QueryResponse(
+            answer="抱歉，检索到的相关文档中似乎没有可以支撑该问题的明确要点。",
+            citations=[],
+            confidence=0.3,
+        )
+
+    # Step 3: Reduce —— 综合所有文档的要点
+    extracts_text = "\\n\\n".join([f"【来源文档：《{e['doc_title']}》】\\n{e['extract']}" for e in doc_extracts])
+    
+    reduce_prompt = f"""用户问题：{question}
+
+以下是从 {len(doc_extracts)} 份文档中独立提取的相关要点：
+{extracts_text}
+
+请综合以上信息，生成一份结构清晰的回答：
+1. 先给出总体结论/概述。
+2. 再分点展开细节。
+3. 如果不同文档存在矛盾或差异，请明确指出。
+4. 基于提供的来源文档给出引用标注 [来源: 文档名]。
+"""
+
+    answer = await llm.generate(
+        prompt=reduce_prompt,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=0.1,
+    )
+
+    # Step 4: 提取引用
+    citations = _extract_citations_from_chunks(answer, retrieved_chunks)
+
+    # Step 5: 评估置信度
+    confidence = await _estimate_confidence(question, answer, retrieved_chunks)
+
+    logger.info(
+        "Cross-document answer generated",
+        question=question[:100],
+        docs_involved=len(doc_extracts),
+        confidence=confidence,
+    )
+
+    return QueryResponse(
+        answer=answer,
+        citations=citations,
+        confidence=confidence,
+    )
+
+
+async def cross_document_summary_stream(
+    question: str,
+    retrieved_chunks: list[RetrievedChunk],
+):
+    """
+    流式 Map-Reduce 生成。返回 (citations, stream_generator)。
+    """
+    import asyncio
+    
+    # Map
+    chunks_by_doc = _group_by_document(retrieved_chunks)
+    
+    async def process_doc(doc_id, chunks):
+        doc_title = chunks[0].doc_title
+        context = _build_context(chunks, max_tokens=6000)
+        map_prompt = f"""用户问题：{question}\n\n以下是来自《{doc_title}》的相关内容：\n{context}\n\n请提取与用户问题直接相关的要点（3-5条），每条附带来源章节或页码。\n如果该文档与问题不太相关，请直接回复"无相关内容"。"""
+        extract = await llm.generate(map_prompt, temperature=0.1)
+        if "无相关内容" not in extract:
+            return {"doc_title": doc_title, "doc_id": doc_id, "extract": extract}
+        return None
+
+    tasks = [process_doc(d, c) for d, c in chunks_by_doc.items()]
+    map_results = await asyncio.gather(*tasks)
+    doc_extracts = [r for r in map_results if r is not None]
+
+    if not doc_extracts:
+        async def empty_stream():
+            yield "抱歉，检索到的相关文档中似乎没有可以支撑该问题的明确要点。"
+        return retrieved_chunks[:5], empty_stream()
+
+    # Reduce
+    extracts_text = "\\n\\n".join([f"【来源文档：《{e['doc_title']}》】\\n{e['extract']}" for e in doc_extracts])
+    reduce_prompt = f"""用户问题：{question}\n\n以下是从 {len(doc_extracts)} 份文档中独立提取的相关要点：\n{extracts_text}\n\n请综合以上信息，生成一份结构清晰的回答：\n1. 先给出总体结论/概述。\n2. 再分点展开细节。\n3. 如果不同文档存在矛盾或差异，请明确指出。\n4. 基于提供的来源文档给出引用标注 [来源: 文档名]。\n"""
+
+    return retrieved_chunks[:10], llm.generate_stream(
+        prompt=reduce_prompt,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=0.1,
+    )
+
+
+def _group_by_document(chunks: list[RetrievedChunk]) -> dict[str, list[RetrievedChunk]]:
+    groups = {}
+    for c in chunks:
+        groups.setdefault(c.doc_id, []).append(c)
+    return groups
+
+
 def _build_context(
     chunks: list[RetrievedChunk],
     max_tokens: int | None = None,

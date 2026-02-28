@@ -113,6 +113,11 @@ class DocumentResponse(BaseModel):
     file_size_bytes: int | None = None
     page_count: int | None = None
     doc_type: str | None = None
+    department: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    group_id: str | None = None
+    doc_summary: str | None = None
+    key_entities: dict[str, Any] = Field(default_factory=dict)
     processing_status: str = "pending"
     chunk_count: int = 0
     created_at: datetime | None = None
@@ -138,7 +143,39 @@ class QueryRequest(BaseModel):
     """问答请求"""
     question: str
     doc_id: str | None = None    # 如果指定则仅在该文档中检索
+    group_id: str | None = None  # 按分组检索
+    doc_type: str | None = None  # 按文档类型检索
     top_k: int = 5               # 最终返回的 chunk 数量
+
+
+class DocumentGroupResponse(BaseModel):
+    """文档组响应"""
+    group_id: str
+    name: str
+    description: str | None = None
+    created_at: datetime | None = None
+
+
+class DocumentGroupCreate(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class DocumentUpdate(BaseModel):
+    group_id: str | None = None
+    tags: list[str] | None = None
+    department: str | None = None
+
+
+class SectionSummaryResponse(BaseModel):
+    """章节摘要响应"""
+    summary_id: str
+    doc_id: str
+    section_path: str
+    summary_text: str
+    key_points: list[str] = Field(default_factory=list)
+    token_count: int | None = None
+    created_at: datetime | None = None
 
 
 class QueryResponse(BaseModel):

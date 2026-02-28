@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, Bot, User, FileText, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ApiClient } from "@/services/api";
-import { Citation } from "@/types/api";
+import { Citation, Document, DocumentGroup } from "@/types/api";
 
 type Message = {
   id: string;
@@ -27,6 +27,28 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedCitations, setExpandedCitations] = useState<Record<string, boolean>>({});
 
+  // Scope Selection
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [groups, setGroups] = useState<DocumentGroup[]>([]);
+  const [selectedScope, setSelectedScope] = useState<{ type: 'all' | 'doc' | 'group', id?: string }>({ type: 'all' });
+
+  useEffect(() => {
+    // Fetch docs and groups for the selector
+    const fetchData = async () => {
+      try {
+        const [docsRes, groupsRes] = await Promise.all([
+          ApiClient.getDocuments(1, 100),
+          ApiClient.getDocumentGroups()
+        ]);
+        setDocuments(docsRes.documents || []);
+        setGroups(groupsRes || []);
+      } catch (e) {
+        console.error("Failed to fetch scope data", e);
+      }
+    };
+    fetchData();
+  }, []);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -45,7 +67,7 @@ export default function Home() {
 
     const userQuery = input.trim();
     setInput("");
-    
+
     const userMessageId = Date.now().toString();
     const assistantMessageId = (Date.now() + 1).toString();
 
@@ -54,42 +76,50 @@ export default function Home() {
       { id: userMessageId, role: "user", content: userQuery },
       { id: assistantMessageId, role: "assistant", content: "" }
     ]);
-    
+
     setIsLoading(true);
 
     let assistantContent = "";
-    
+
+    // Prepare query scope
+    const queryParams: any = { question: userQuery, top_k: 5 };
+    if (selectedScope.type === 'doc') {
+      queryParams.doc_id = selectedScope.id;
+    } else if (selectedScope.type === 'group') {
+      queryParams.group_id = selectedScope.id;
+    }
+
     try {
       await ApiClient.queryStream(
-        { question: userQuery, top_k: 5 },
+        queryParams,
         (chunk) => {
           assistantContent += chunk;
-          setMessages(prev => prev.map(msg => 
-            msg.id === assistantMessageId 
-              ? { ...msg, content: assistantContent } 
+          setMessages(prev => prev.map(msg =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: assistantContent }
               : msg
           ));
         },
         (citations) => {
-          setMessages(prev => prev.map(msg => 
-            msg.id === assistantMessageId 
-              ? { ...msg, citations } 
+          setMessages(prev => prev.map(msg =>
+            msg.id === assistantMessageId
+              ? { ...msg, citations }
               : msg
           ));
         },
         (error) => {
           console.error("Stream error:", error);
-          setMessages(prev => prev.map(msg => 
+          setMessages(prev => prev.map(msg =>
             msg.id === assistantMessageId && !msg.content
-              ? { ...msg, content: `Error: ${error.message}`, error: true } 
+              ? { ...msg, content: `Error: ${error.message}`, error: true }
               : msg
           ));
         }
       );
     } catch (err: any) {
-      setMessages(prev => prev.map(msg => 
+      setMessages(prev => prev.map(msg =>
         msg.id === assistantMessageId && !msg.content
-          ? { ...msg, content: `Error: ${err.message}`, error: true } 
+          ? { ...msg, content: `Error: ${err.message}`, error: true }
           : msg
       ));
     } finally {
@@ -132,7 +162,7 @@ export default function Home() {
                   "px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap",
                   message.role === "user"
                     ? "bg-blue-600 text-white"
-                    : message.error 
+                    : message.error
                       ? "bg-red-50 text-red-700 border border-red-100"
                       : "bg-gray-50 text-gray-900 border border-gray-100"
                 )}
@@ -170,7 +200,7 @@ export default function Home() {
                             <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
                           )}
                         </button>
-                        
+
                         {expandedCitations[`${message.id}-${idx}`] && (
                           <div className="mt-1 p-3 text-xs text-gray-600 bg-blue-50/50 border border-blue-100 rounded-lg whitespace-pre-wrap leading-relaxed">
                             {citation.content_snippet}
@@ -187,7 +217,45 @@ export default function Home() {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="p-4 border-t border-gray-100 bg-gray-50 sm:rounded-b-xl">
+      <div className="p-4 border-t border-gray-100 bg-gray-50 sm:rounded-b-xl flex flex-col gap-3">
+        {/* Scope Selector */}
+        <div className="flex items-center gap-2 text-sm text-gray-600">
+          <span className="font-medium text-gray-700">Scope:</span>
+          <select
+            value={`${selectedScope.type}${selectedScope.id ? `:${selectedScope.id}` : ""}`}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === "all") setSelectedScope({ type: 'all' });
+              else {
+                const [type, id] = val.split(":");
+                setSelectedScope({ type: type as any, id });
+              }
+            }}
+            className="rounded-md border border-gray-300 py-1 pl-2 pr-8 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[200px] truncate"
+            disabled={isLoading}
+          >
+            <option value="all">All Documents</option>
+            {groups.length > 0 && (
+              <optgroup label="Groups">
+                {groups.map(g => (
+                  <option key={`group:${g.group_id}`} value={`group:${g.group_id}`}>
+                    Group: {g.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {documents.length > 0 && (
+              <optgroup label="Specific Documents">
+                {documents.map(d => (
+                  <option key={`doc:${d.doc_id}`} value={`doc:${d.doc_id}`}>
+                    Doc: {d.title}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
+
         <form onSubmit={handleSubmit} className="relative flex items-end gap-2">
           <textarea
             value={input}

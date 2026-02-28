@@ -15,7 +15,13 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from sqlalchemy import text
 
 from app.core.infrastructure import get_db_session
-from app.core.models import DocumentListResponse, DocumentResponse
+from app.core.models import (
+    DocumentGroupCreate,
+    DocumentGroupResponse,
+    DocumentListResponse,
+    DocumentResponse,
+    DocumentUpdate,
+)
 from app.ingestion.pipeline import ingestion_pipeline
 from config.settings import settings
 
@@ -212,8 +218,95 @@ async def list_documents(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 文档详情
+# 文档组管理 (Phase 2)
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/groups", response_model=DocumentGroupResponse, status_code=201)
+async def create_document_group(group: DocumentGroupCreate):
+    """创建新的文档组"""
+    group_id = str(uuid.uuid4())
+    async with get_db_session() as session:
+        await session.execute(
+            text("""
+                INSERT INTO document_groups (group_id, name, description)
+                VALUES (:group_id, :name, :description)
+            """),
+            {
+                "group_id": group_id,
+                "name": group.name,
+                "description": group.description,
+            },
+        )
+    return DocumentGroupResponse(
+        group_id=group_id,
+        name=group.name,
+        description=group.description,
+    )
+
+
+@router.get("/groups", response_model=list[DocumentGroupResponse])
+async def list_document_groups():
+    """获取所有文档组"""
+    async with get_db_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT group_id, name, description, created_at
+                FROM document_groups
+                ORDER BY created_at DESC
+            """)
+        )
+        rows = result.fetchall()
+
+    return [
+        DocumentGroupResponse(
+            group_id=str(row[0]),
+            name=row[1],
+            description=row[2],
+            created_at=row[3],
+        )
+        for row in rows
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 文档详情及元数据修改
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.put("/{doc_id}/metadata", response_model=DocumentResponse)
+async def update_document_metadata(doc_id: str, update_data: DocumentUpdate):
+    """更新文档的元数据（分配到组、打标签等）"""
+    async with get_db_session() as session:
+        # Check if doc exists
+        result = await session.execute(
+            text("SELECT doc_id FROM documents WHERE doc_id = :doc_id"),
+            {"doc_id": doc_id},
+        )
+        if not result.fetchone():
+            raise HTTPException(status_code=404, detail=f"文档不存在: {doc_id}")
+
+        # Update fields dynamically
+        updates = []
+        params = {"doc_id": doc_id}
+        if update_data.group_id is not None:
+            updates.append("group_id = :group_id")
+            params["group_id"] = update_data.group_id
+        if update_data.tags is not None:
+            updates.append("tags = :tags")
+            params["tags"] = update_data.tags
+        if update_data.department is not None:
+            updates.append("department = :department")
+            params["department"] = update_data.department
+
+        if updates:
+            set_clause = ", ".join(updates)
+            await session.execute(
+                text(f"UPDATE documents SET {set_clause} WHERE doc_id = :doc_id"),
+                params,
+            )
+
+    return await get_document(doc_id)
 
 
 @router.get("/{doc_id}", response_model=DocumentResponse)

@@ -5,9 +5,32 @@ export interface Document {
   file_size_bytes?: number | null;
   page_count?: number | null;
   doc_type?: string | null;
-  processing_status: 'pending' | 'processing' | 'completed' | 'failed';
+  department?: string | null;
+  tags?: string[];
+  group_id?: string | null;
+  doc_summary?: string | null;
+  key_entities?: Record<string, string[]>;
+  processing_status: 'pending' | 'parsing' | 'chunking' | 'embedding' | 'summarizing' | 'ready' | 'error';
   chunk_count: number;
   created_at?: string | null;
+}
+
+export interface DocumentGroup {
+  group_id: string;
+  name: string;
+  description?: string | null;
+  created_at?: string | null;
+}
+
+export interface DocumentGroupCreate {
+  name: string;
+  description?: string | null;
+}
+
+export interface DocumentUpdate {
+  group_id?: string | null;
+  tags?: string[] | null;
+  department?: string | null;
 }
 
 export interface DocumentUploadResponse {
@@ -43,6 +66,8 @@ export interface Citation {
 export interface QueryRequest {
   question: string;
   doc_id?: string | null;
+  group_id?: string | null;
+  doc_type?: string | null;
   top_k?: number;
 }
 

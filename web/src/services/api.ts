@@ -1,8 +1,57 @@
-import { Document, DocumentListResponse, DocumentUploadResponse, QueryRequest, QueryResponse, Chunk } from '../types/api';
+import {
+  Document,
+  DocumentGroup,
+  DocumentGroupCreate,
+  DocumentListResponse,
+  DocumentUpdate,
+  DocumentUploadResponse,
+  QueryRequest,
+  QueryResponse,
+  Chunk
+} from '../types/api';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 export class ApiClient {
+  // --- Document Groups ---
+
+  static async createDocumentGroup(data: DocumentGroupCreate): Promise<DocumentGroup> {
+    const response = await fetch(`${API_BASE_URL}/documents/groups`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to create group: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  static async getDocumentGroups(): Promise<DocumentGroup[]> {
+    const response = await fetch(`${API_BASE_URL}/documents/groups`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch groups: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  static async updateDocumentMetadata(docId: string, data: DocumentUpdate): Promise<Document> {
+    const response = await fetch(`${API_BASE_URL}/documents/${docId}/metadata`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to update metadata: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  // --- Documents ---
   static async uploadDocument(file: File): Promise<DocumentUploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
@@ -21,7 +70,7 @@ export class ApiClient {
 
   static async getDocuments(page = 1, size = 50): Promise<DocumentListResponse> {
     const response = await fetch(`${API_BASE_URL}/documents/?page=${page}&size=${size}`);
-    
+
     if (!response.ok) {
       throw new Error(`Failed to fetch documents: ${response.statusText}`);
     }
@@ -31,7 +80,7 @@ export class ApiClient {
 
   static async getDocument(docId: string): Promise<Document> {
     const response = await fetch(`${API_BASE_URL}/documents/${docId}`);
-    
+
     if (!response.ok) {
       throw new Error(`Failed to fetch document: ${response.statusText}`);
     }
@@ -43,7 +92,7 @@ export class ApiClient {
     const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
       method: 'DELETE',
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to delete document: ${response.statusText}`);
     }
@@ -53,7 +102,7 @@ export class ApiClient {
 
   static async getDocumentChunks(docId: string): Promise<{ items: Chunk[], total: number }> {
     const response = await fetch(`${API_BASE_URL}/documents/${docId}/chunks`);
-    
+
     if (!response.ok) {
       throw new Error(`Failed to fetch document chunks: ${response.statusText}`);
     }
@@ -111,7 +160,7 @@ export class ApiClient {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        
+
         // Process SSE lines
         const lines = buffer.split('\n');
         // Keep the last partial line in the buffer

@@ -13,8 +13,16 @@ from fastapi.responses import StreamingResponse
 
 from app.core.llm_client import llm
 from app.core.models import QueryRequest, QueryResponse
-from app.generation.answer import generate_answer, _build_context, SYSTEM_PROMPT, ANSWER_PROMPT_TEMPLATE
+from app.generation.answer import (
+    ANSWER_PROMPT_TEMPLATE,
+    SYSTEM_PROMPT,
+    _build_context,
+    cross_document_summary,
+    cross_document_summary_stream,
+    generate_answer,
+)
 from app.retrieval.hybrid_search import hybrid_search
+from app.retrieval.router import route_query
 
 logger = structlog.get_logger()
 
@@ -50,12 +58,39 @@ async def ask_question(request: QueryRequest):
     )
 
     try:
+        # 准备用户过滤器
+        user_filters = {}
+        if request.doc_id:
+            user_filters["doc_id"] = request.doc_id
+        if request.group_id:
+            user_filters["group_id"] = request.group_id
+        if request.doc_type:
+            user_filters["doc_type"] = request.doc_type
+
+        # Step 0: 路由分析
+        plan = await route_query(request.question, user_filters)
+
         # Step 1: 混合检索
-        retrieved_chunks = await hybrid_search(
-            query=request.question,
-            doc_id=request.doc_id,
-            top_k=request.top_k,
-        )
+        all_chunks = []
+        for q in plan.search_queries[:2]: # 最多用 LLM 优化的前2个检索词
+            chunks = await hybrid_search(
+                query=q,
+                metadata_filters=plan.metadata_filters,
+                top_k=request.top_k,
+            )
+            all_chunks.extend(chunks)
+
+        # 去重
+        seen = set()
+        retrieved_chunks = []
+        for c in all_chunks:
+            if c.chunk_id not in seen:
+                seen.add(c.chunk_id)
+                retrieved_chunks.append(c)
+
+        # 再次按分数排序并截断
+        retrieved_chunks.sort(key=lambda x: x.score, reverse=True)
+        retrieved_chunks = retrieved_chunks[:request.top_k]
 
         logger.info(
             "Retrieval completed",
@@ -64,10 +99,14 @@ async def ask_question(request: QueryRequest):
         )
 
         # Step 2: 生成答案
-        response = await generate_answer(
-            question=request.question,
-            retrieved_chunks=retrieved_chunks,
-        )
+        if plan.needs_multi_doc and len(set(c.doc_id for c in retrieved_chunks)) > 1:
+            logger.info("Using Map-Reduce cross-document generation")
+            response = await cross_document_summary(request.question, retrieved_chunks)
+        else:
+            response = await generate_answer(
+                question=request.question,
+                retrieved_chunks=retrieved_chunks,
+            )
 
         # 计算延迟
         latency_ms = int((time.time() - start_time) * 1000)
@@ -118,12 +157,38 @@ async def ask_question_stream(request: QueryRequest):
         doc_id=request.doc_id,
     )
 
-    # 先执行检索（非流式）
-    retrieved_chunks = await hybrid_search(
-        query=request.question,
-        doc_id=request.doc_id,
-        top_k=request.top_k,
-    )
+    # 准备用户过滤器
+    user_filters = {}
+    if request.doc_id:
+        user_filters["doc_id"] = request.doc_id
+    if request.group_id:
+        user_filters["group_id"] = request.group_id
+    if request.doc_type:
+        user_filters["doc_type"] = request.doc_type
+
+    # Step 0: 路由分析
+    plan = await route_query(request.question, user_filters)
+
+    # 检索
+    all_chunks = []
+    for q in plan.search_queries[:2]:
+        chunks = await hybrid_search(
+            query=q,
+            metadata_filters=plan.metadata_filters,
+            top_k=request.top_k,
+        )
+        all_chunks.extend(chunks)
+
+    # 去重
+    seen = set()
+    retrieved_chunks = []
+    for c in all_chunks:
+        if c.chunk_id not in seen:
+            seen.add(c.chunk_id)
+            retrieved_chunks.append(c)
+
+    retrieved_chunks.sort(key=lambda x: x.score, reverse=True)
+    retrieved_chunks = retrieved_chunks[:request.top_k]
 
     if not retrieved_chunks:
         async def empty_stream():
@@ -137,20 +202,25 @@ async def ask_question_stream(request: QueryRequest):
             media_type="text/event-stream",
         )
 
-    # 构建 prompt
-    context = _build_context(retrieved_chunks)
-    prompt = ANSWER_PROMPT_TEMPLATE.format(
-        context=context,
-        question=request.question,
-    )
-
     async def generate_stream():
         """SSE 流式生成"""
         import json
         try:
+            # 决定使用哪种流
+            if plan.needs_multi_doc and len(set(c.doc_id for c in retrieved_chunks)) > 1:
+                logger.info("Using Map-Reduce stream")
+                # cross_document_summary_stream 返回 (citations, generator)
+                citations_list, stream_gen = await cross_document_summary_stream(request.question, retrieved_chunks)
+            else:
+                logger.info("Using Standard RAG stream")
+                citations_list = retrieved_chunks[:5]
+                context = _build_context(retrieved_chunks)
+                prompt = ANSWER_PROMPT_TEMPLATE.format(context=context, question=request.question)
+                stream_gen = llm.generate_stream(prompt=prompt, system_prompt=SYSTEM_PROMPT, temperature=0.1)
+
             # 提前发送引用来源
             citations = []
-            for chunk in retrieved_chunks[:5]:
+            for chunk in citations_list:
                 snippet = chunk.content[:100].replace("\n", " ")
                 if len(chunk.content) > 100:
                     snippet += "..."
@@ -166,14 +236,10 @@ async def ask_question_stream(request: QueryRequest):
             sources_data = json.dumps({"type": "sources", "citations": citations}, ensure_ascii=False)
             yield f"data: {sources_data}\n\n"
 
-            async for token in llm.generate_stream(
-                prompt=prompt,
-                system_prompt=SYSTEM_PROMPT,
-                temperature=0.1,
-            ):
-                # SSE 格式 JSON
-                token_data = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                yield f"data: {token_data}\n\n"
+            async for token in stream_gen:
+                if isinstance(token, str):
+                    token_data = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                    yield f"data: {token_data}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error("Stream generation failed", error=str(e))

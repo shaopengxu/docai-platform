@@ -19,12 +19,16 @@ from app.core.embedding import encode_texts
 from app.core.infrastructure import (
     get_db_session,
     get_es_client,
-    get_minio_client,
     get_qdrant_client,
 )
 from app.core.models import Chunk, ChunkType, ParsedDocument, ProcessingStatus
 from app.ingestion.chunker import semantic_chunk
 from app.ingestion.parser import parse_document
+from app.ingestion.summarizer import (
+    generate_contextual_description,
+    generate_doc_summary_and_entities,
+    generate_section_summary,
+)
 from config.settings import settings
 
 logger = structlog.get_logger()
@@ -98,6 +102,16 @@ class IngestionPipeline:
                 logger.warning("No chunks generated", doc_id=doc_id)
                 await self._update_status(doc_id, ProcessingStatus.READY)
                 return doc_id
+
+            # Step 3.5: 生成摘要和实体 (Phase 2)
+            await self._update_status(doc_id, ProcessingStatus.SUMMARIZING)
+            doc_summary, summary_chunks = await self._generate_summaries_and_metadata(
+                chunks, doc_id, parsed_doc.title
+            )
+            chunks.extend(summary_chunks)
+
+            # Step 3.8: Contextual Retrieval 增强
+            await self._add_contextual_descriptions(chunks, parsed_doc.title, doc_summary)
 
             # Step 4: 嵌入
             await self._update_status(doc_id, ProcessingStatus.EMBEDDING)
@@ -219,6 +233,45 @@ class IngestionPipeline:
                 {"doc_id": doc_id, "cnt": count},
             )
 
+    async def _update_doc_summary_and_entities(
+        self, doc_id: str, doc_summary: str, key_entities: dict
+    ):
+        import json
+        async with get_db_session() as session:
+            await session.execute(
+                text("""
+                    UPDATE documents
+                    SET doc_summary = :doc_summary, key_entities = :key_entities
+                    WHERE doc_id = :doc_id
+                """),
+                {
+                    "doc_id": doc_id,
+                    "doc_summary": doc_summary,
+                    "key_entities": json.dumps(key_entities, ensure_ascii=False),
+                },
+            )
+
+    async def _store_section_summary(
+        self, doc_id: str, section_path: str, summary_text: str, key_points: list[str]
+    ):
+        import json
+        async with get_db_session() as session:
+            await session.execute(
+                text("""
+                    INSERT INTO section_summaries (
+                        doc_id, section_path, summary_text, key_points
+                    ) VALUES (
+                        :doc_id, :section_path, :summary_text, :key_points
+                    )
+                """),
+                {
+                    "doc_id": doc_id,
+                    "section_path": section_path,
+                    "summary_text": summary_text,
+                    "key_points": json.dumps(key_points, ensure_ascii=False),
+                },
+            )
+
     async def _store_chunks_metadata(self, chunks: list[Chunk], doc_id: str):
         """将 chunk 元数据存入 PostgreSQL"""
         async with get_db_session() as session:
@@ -248,6 +301,96 @@ class IngestionPipeline:
                         "es_doc_id": chunk.chunk_id,         # 与 ES doc_id 一致
                     },
                 )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 摘要生成与上下文增强 (Phase 2)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _generate_summaries_and_metadata(
+        self, chunks: list[Chunk], doc_id: str, title: str
+    ) -> tuple[str, list[Chunk]]:
+        """
+        生成章节摘要和整体文档摘要，存入 DB，并以新 Chunk 返回。
+        """
+        logger.info("Generating summaries", doc_id=doc_id)
+        
+        # 提取 unique chapters
+        sections = {}
+        for c in chunks:
+            if c.chunk_type == ChunkType.TEXT and c.section_path:
+                sections.setdefault(c.section_path, []).append(c)
+
+        section_summaries_text_parts = []
+        summary_chunks = []
+
+        # 1. 章节级摘要
+        for section_path, section_chunks in sections.items():
+            content = "\\n".join(c.content for c in section_chunks)
+            summary_text, key_points = await generate_section_summary(title, section_path, content)
+            
+            if summary_text:
+                await self._store_section_summary(doc_id, section_path, summary_text, key_points)
+                
+                # 创建章节摘要 Chunk
+                sc = Chunk(
+                    doc_id=doc_id,
+                    doc_title=title,
+                    section_path=section_path,
+                    chunk_type=ChunkType.SECTION_SUMMARY,
+                    content=summary_text,
+                )
+                summary_chunks.append(sc)
+                section_summaries_text_parts.append(f"【{section_path}】\\n{summary_text}")
+
+        # 2. 文档级摘要及实体提取
+        doc_summary = ""
+        if section_summaries_text_parts:
+            combined_section_summaries = "\\n\\n".join(section_summaries_text_parts)
+            doc_summary, key_entities = await generate_doc_summary_and_entities(
+                title, combined_section_summaries
+            )
+            
+            if doc_summary:
+                await self._update_doc_summary_and_entities(doc_id, doc_summary, key_entities)
+                
+                # 创建文档摘要 Chunk
+                dc = Chunk(
+                    doc_id=doc_id,
+                    doc_title=title,
+                    chunk_type=ChunkType.DOC_SUMMARY,
+                    content=doc_summary,
+                )
+                summary_chunks.append(dc)
+
+        return doc_summary, summary_chunks
+
+    async def _add_contextual_descriptions(self, chunks: list[Chunk], doc_title: str, doc_summary: str):
+        """
+        为常规文本 chunk 补充文档上下文描述，以提升混合检索精度。
+        """
+        if not doc_summary:
+            return
+            
+        logger.info("Adding contextual descriptions", chunks_count=len(chunks))
+        
+        # 为了速度可以考虑并发执行
+        import asyncio
+        async def process_chunk(chunk: Chunk):
+            if chunk.chunk_type == ChunkType.TEXT:
+                desc = await generate_contextual_description(
+                    doc_title, doc_summary, chunk.section_path, chunk.content
+                )
+                if desc:
+                    # 按照架构设计，把上下文加在内容开头
+                    chunk.content = f"{desc}\\n\\n{chunk.content}"
+
+        # 限制并发度以避免 API 请求过多
+        semaphore = asyncio.Semaphore(10)
+        async def bounded_process_chunk(chunk):
+            async with semaphore:
+                await process_chunk(chunk)
+
+        await asyncio.gather(*(bounded_process_chunk(c) for c in chunks))
 
     # ─────────────────────────────────────────────────────────────────────
     # MinIO 操作

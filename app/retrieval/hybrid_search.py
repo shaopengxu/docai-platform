@@ -42,6 +42,7 @@ def _get_reranker():
 async def hybrid_search(
     query: str,
     doc_id: str | None = None,
+    metadata_filters: dict | None = None,
     top_k: int | None = None,
     use_reranker: bool = True,
 ) -> list[RetrievedChunk]:
@@ -58,10 +59,11 @@ async def hybrid_search(
         排序后的检索结果列表
     """
     top_k = top_k or settings.retrieval_final_top_k
+    metadata_filters = metadata_filters or {}
 
     # 并行执行向量检索和 BM25 检索
-    vector_results = await _vector_search(query, doc_id)
-    bm25_results = await _bm25_search(query, doc_id)
+    vector_results = await _vector_search(query, doc_id, metadata_filters)
+    bm25_results = await _bm25_search(query, doc_id, metadata_filters)
 
     logger.info(
         "Search results",
@@ -98,6 +100,7 @@ async def hybrid_search(
 async def _vector_search(
     query: str,
     doc_id: str | None = None,
+    metadata_filters: dict | None = None,
 ) -> list[RetrievedChunk]:
     """通过 Qdrant 进行向量语义检索"""
     from qdrant_client.models import FieldCondition, Filter, MatchValue
@@ -111,6 +114,14 @@ async def _vector_search(
         must_conditions.append(
             FieldCondition(key="doc_id", match=MatchValue(value=doc_id))
         )
+    
+    if metadata_filters:
+        for k, v in metadata_filters.items():
+            if v is not None:
+                must_conditions.append(
+                    FieldCondition(key=k, match=MatchValue(value=v))
+                )
+
     # 默认只检索最新版本
     must_conditions.append(
         FieldCondition(key="is_latest", match=MatchValue(value=True))
@@ -154,6 +165,7 @@ async def _vector_search(
 async def _bm25_search(
     query: str,
     doc_id: str | None = None,
+    metadata_filters: dict | None = None,
 ) -> list[RetrievedChunk]:
     """通过 Elasticsearch 进行 BM25 关键词检索"""
     es = get_es_client()
@@ -174,6 +186,11 @@ async def _bm25_search(
 
     if doc_id:
         filter_clauses.append({"term": {"doc_id": doc_id}})
+        
+    if metadata_filters:
+        for k, v in metadata_filters.items():
+            if v is not None:
+                filter_clauses.append({"term": {k: v}})
 
     search_body = {
         "query": {
