@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # ── 认证 (Phase 5) ──
+    jwt_secret_key: str = Field(
+        default="docai-dev-secret-key-change-in-production",
+        description="JWT 签名密钥，生产环境必须修改"
+    )
+    jwt_algorithm: str = "HS256"
+    jwt_expire_hours: int = 24              # Token 有效期
+    auth_enabled: bool = False              # 是否启用认证（渐进式开关）
+
     # ── LLM ──
     llm_provider: str = Field(default="anthropic", description="anthropic / openai")
     anthropic_api_key: str = ""

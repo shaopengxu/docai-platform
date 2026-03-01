@@ -203,8 +203,8 @@ async def cross_document_summary(
         )
 
     # Step 3: Reduce —— 综合所有文档的要点
-    extracts_text = "\\n\\n".join([f"【来源文档：《{e['doc_title']}》】\\n{e['extract']}" for e in doc_extracts])
-    
+    extracts_text = "\n\n".join([f"【来源文档：《{e['doc_title']}》】\n{e['extract']}" for e in doc_extracts])
+
     reduce_prompt = f"""用户问题：{question}
 
 以下是从 {len(doc_extracts)} 份文档中独立提取的相关要点：
@@ -274,7 +274,7 @@ async def cross_document_summary_stream(
         return retrieved_chunks[:5], empty_stream()
 
     # Reduce
-    extracts_text = "\\n\\n".join([f"【来源文档：《{e['doc_title']}》】\\n{e['extract']}" for e in doc_extracts])
+    extracts_text = "\n\n".join([f"【来源文档：《{e['doc_title']}》】\n{e['extract']}" for e in doc_extracts])
     reduce_prompt = f"""用户问题：{question}\n\n以下是从 {len(doc_extracts)} 份文档中独立提取的相关要点：\n{extracts_text}\n\n请综合以上信息，生成一份结构清晰的回答：\n1. 先给出总体结论/概述。\n2. 再分点展开细节。\n3. 如果不同文档存在矛盾或差异，请明确指出。\n4. 基于提供的来源文档给出引用标注 [来源: 文档名]。\n"""
 
     return retrieved_chunks[:10], llm.generate_stream(

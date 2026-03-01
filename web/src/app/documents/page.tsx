@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { ApiClient } from "@/services/api";
 import { Document } from "@/types/api";
 import { formatDistanceToNow } from "date-fns";
-import { FileText, Trash2, RefreshCw, AlertCircle } from "lucide-react";
+import { FileText, Trash2, RefreshCw, AlertCircle, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 
@@ -31,7 +31,8 @@ export default function DocumentsPage() {
     // Set up polling for documents still processing
     const interval = setInterval(() => {
       setDocuments(current => {
-        if ((current || []).some(doc => doc.processing_status === 'pending' || doc.processing_status === 'processing')) {
+        const processingStates = ['pending', 'parsing', 'chunking', 'embedding', 'summarizing'];
+        if ((current || []).some(doc => processingStates.includes(doc.processing_status))) {
           fetchDocuments();
         }
         return current;
@@ -52,11 +53,14 @@ export default function DocumentsPage() {
   };
 
   const StatusBadge = ({ status }: { status: Document["processing_status"] }) => {
-    const styles = {
+    const styles: Record<string, string> = {
       pending: "bg-yellow-50 text-yellow-700 ring-yellow-600/20",
-      processing: "bg-blue-50 text-blue-700 ring-blue-700/10",
-      completed: "bg-green-50 text-green-700 ring-green-600/20",
-      failed: "bg-red-50 text-red-700 ring-red-600/10",
+      parsing: "bg-blue-50 text-blue-700 ring-blue-700/10",
+      chunking: "bg-blue-50 text-blue-700 ring-blue-700/10",
+      embedding: "bg-blue-50 text-blue-700 ring-blue-700/10",
+      summarizing: "bg-blue-50 text-blue-700 ring-blue-700/10",
+      ready: "bg-green-50 text-green-700 ring-green-600/20",
+      error: "bg-red-50 text-red-700 ring-red-600/10",
     };
 
     return (
@@ -119,6 +123,7 @@ export default function DocumentsPage() {
                 <tr>
                   <th scope="col" className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0">Document</th>
                   <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
+                  <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Version</th>
                   <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Chunks</th>
                   <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Pages</th>
                   <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Uploaded</th>
@@ -130,7 +135,7 @@ export default function DocumentsPage() {
               <tbody className="divide-y divide-gray-200">
                 {(!documents || documents.length === 0) && !loading && (
                   <tr>
-                    <td colSpan={6} className="py-10 text-center text-sm text-gray-500">
+                    <td colSpan={7} className="py-10 text-center text-sm text-gray-500">
                       <div className="flex flex-col items-center justify-center">
                         <FileText className="h-10 w-10 text-gray-300 mb-3" />
                         <p>No documents found.</p>
@@ -154,6 +159,20 @@ export default function DocumentsPage() {
                     </td>
                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
                       <StatusBadge status={doc.processing_status} />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs">{doc.version_number || 'v1.0'}</span>
+                        {doc.parent_version_id && (
+                          <Link
+                            href={`/versions/${doc.doc_id}`}
+                            className="text-blue-600 hover:text-blue-800"
+                            title="View version history"
+                          >
+                            <GitBranch className="h-3.5 w-3.5" />
+                          </Link>
+                        )}
+                      </div>
                     </td>
                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
                       {doc.chunk_count}

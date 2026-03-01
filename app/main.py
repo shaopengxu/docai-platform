@@ -81,7 +81,9 @@ async def detailed_health_check():
     return {"status": "ok" if all_ok else "degraded", "services": checks}
 
 
-# ── Phase 1 路由 ──
-from app.api import documents, query
+# ── 路由注册 ──
+from app.api import auth, documents, query, versions
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(query.router, prefix="/api/v1/query", tags=["query"])
+app.include_router(versions.router, prefix="/api/v1/versions", tags=["versions"])

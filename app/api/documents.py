@@ -1,5 +1,5 @@
 """
-DocAI Platform - 文档管理 API
+DocAI Platform - 文档管理 API (Phase 5: 权限控制)
 文档上传、列表、状态查询、删除
 """
 
@@ -11,9 +11,13 @@ import uuid
 from pathlib import Path
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import text
 
+from app.auth.audit import audit_log
+from app.auth.dependencies import get_current_user, require_editor_or_above
+from app.auth.models import CurrentUser
+from app.auth.permissions import check_document_write_access, get_accessible_doc_ids
 from app.core.infrastructure import get_db_session
 from app.core.models import (
     DocumentGroupCreate,
@@ -38,9 +42,11 @@ router = APIRouter()
 @router.post("", response_model=DocumentResponse, status_code=201)
 async def upload_document(
     background_tasks: BackgroundTasks,
+    request: Request,
     file: UploadFile = File(...),
     doc_type: str | None = Form(default=None),
     tags: str | None = Form(default=None),
+    current_user: CurrentUser | None = Depends(get_current_user),
 ):
     """
     上传文档并启动异步处理
@@ -102,6 +108,17 @@ async def upload_document(
         doc_type=doc_type,
         tags=tag_list,
         tmp_dir=tmp_dir,
+        owner_id=current_user.user_id if current_user else None,
+    )
+
+    # Phase 5: 审计日志
+    await audit_log(
+        action="upload",
+        user=current_user,
+        resource_type="document",
+        resource_id=doc_id,
+        details={"filename": filename, "file_size": file_size, "doc_type": doc_type},
+        request=request,
     )
 
     return DocumentResponse(
@@ -121,6 +138,7 @@ async def _process_document_task(
     doc_type: str | None,
     tags: list[str],
     tmp_dir: str,
+    owner_id: str | None = None,
 ):
     """后台文档处理任务"""
     try:
@@ -131,10 +149,19 @@ async def _process_document_task(
             doc_type=doc_type,
             tags=tags,
         )
+        # Phase 5: 设置文档 owner
+        if owner_id:
+            try:
+                async with get_db_session() as session:
+                    await session.execute(
+                        text("UPDATE documents SET owner_id = :oid WHERE doc_id = :did"),
+                        {"oid": owner_id, "did": doc_id},
+                    )
+            except Exception:
+                pass
     except Exception as e:
         logger.error("Background document processing failed", doc_id=doc_id, error=str(e))
     finally:
-        # 清理临时文件
         try:
             import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -182,7 +209,8 @@ async def list_documents(
         result = await session.execute(
             text(f"""
                 SELECT doc_id, title, original_filename, file_size_bytes,
-                       page_count, doc_type, processing_status, chunk_count, created_at
+                       page_count, doc_type, processing_status, chunk_count, created_at,
+                       version_number, version_status, is_latest, parent_version_id
                 FROM documents
                 {where_clause}
                 ORDER BY created_at DESC
@@ -210,6 +238,10 @@ async def list_documents(
             processing_status=row[6],
             chunk_count=row[7] or 0,
             created_at=row[8],
+            version_number=row[9] or "v1.0",
+            version_status=row[10] or "active",
+            is_latest=bool(row[11]) if row[11] is not None else True,
+            parent_version_id=str(row[12]) if row[12] else None,
         )
         for row in rows
     ]
@@ -305,13 +337,15 @@ async def update_document_metadata(doc_id: str, update_data: DocumentUpdate):
                 text(f"UPDATE documents SET {set_clause} WHERE doc_id = :doc_id"),
                 params,
             )
-            
+
             # Fetch all chunk IDs for this document to update them in vector db
             chunk_ids_res = await session.execute(
                 text("SELECT chunk_id FROM chunks WHERE doc_id = :doc_id"),
                 {"doc_id": doc_id}
             )
             chunk_ids = [str(row[0]) for row in chunk_ids_res.fetchall()]
+        else:
+            chunk_ids = []
 
     # Push updates to Elasticsearch and Qdrant
     if chunk_ids and (update_data.group_id is not None or update_data.department is not None):
@@ -362,7 +396,8 @@ async def get_document(doc_id: str):
         result = await session.execute(
             text("""
                 SELECT doc_id, title, original_filename, file_size_bytes,
-                       page_count, doc_type, processing_status, chunk_count, created_at
+                       page_count, doc_type, processing_status, chunk_count, created_at,
+                       version_number, version_status, is_latest, parent_version_id
                 FROM documents
                 WHERE doc_id = :doc_id
             """),
@@ -383,6 +418,10 @@ async def get_document(doc_id: str):
         processing_status=row[6],
         chunk_count=row[7] or 0,
         created_at=row[8],
+        version_number=row[9] or "v1.0",
+        version_status=row[10] or "active",
+        is_latest=bool(row[11]) if row[11] is not None else True,
+        parent_version_id=str(row[12]) if row[12] else None,
     )
 
 

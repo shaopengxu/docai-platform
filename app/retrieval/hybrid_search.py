@@ -45,6 +45,8 @@ async def hybrid_search(
     metadata_filters: dict | None = None,
     top_k: int | None = None,
     use_reranker: bool = True,
+    version_mode: str | None = None,
+    accessible_doc_ids: list[str] | None = None,  # Phase 5: 权限过滤
 ) -> list[RetrievedChunk]:
     """
     混合检索：向量 + BM25 + RRF 融合 + Reranker
@@ -54,6 +56,8 @@ async def hybrid_search(
         doc_id: 可选，限定在某个文档内检索
         top_k: 最终返回数量
         use_reranker: 是否使用 reranker 重排序
+        accessible_doc_ids: Phase 5 权限过滤，用户可访问的文档 ID 列表。
+                           None 表示不做过滤（admin 或未启用认证）。
 
     Returns:
         排序后的检索结果列表
@@ -62,8 +66,8 @@ async def hybrid_search(
     metadata_filters = metadata_filters or {}
 
     # 并行执行向量检索和 BM25 检索
-    vector_results = await _vector_search(query, doc_id, metadata_filters)
-    bm25_results = await _bm25_search(query, doc_id, metadata_filters)
+    vector_results = await _vector_search(query, doc_id, metadata_filters, version_mode, accessible_doc_ids)
+    bm25_results = await _bm25_search(query, doc_id, metadata_filters, version_mode, accessible_doc_ids)
 
     logger.info(
         "Search results",
@@ -101,9 +105,11 @@ async def _vector_search(
     query: str,
     doc_id: str | None = None,
     metadata_filters: dict | None = None,
+    version_mode: str | None = None,
+    accessible_doc_ids: list[str] | None = None,
 ) -> list[RetrievedChunk]:
     """通过 Qdrant 进行向量语义检索"""
-    from qdrant_client.models import FieldCondition, Filter, MatchValue
+    from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
     qdrant = get_qdrant_client()
     query_vector = encode_single(query)
@@ -114,7 +120,7 @@ async def _vector_search(
         must_conditions.append(
             FieldCondition(key="doc_id", match=MatchValue(value=doc_id))
         )
-    
+
     if metadata_filters:
         for k, v in metadata_filters.items():
             if v is not None:
@@ -122,10 +128,22 @@ async def _vector_search(
                     FieldCondition(key=k, match=MatchValue(value=v))
                 )
 
-    # 默认只检索最新版本
-    must_conditions.append(
-        FieldCondition(key="is_latest", match=MatchValue(value=True))
-    )
+    # Phase 5: 权限过滤 — 在向量检索层就过滤无权文档
+    if accessible_doc_ids is not None:
+        must_conditions.append(
+            FieldCondition(key="doc_id", match=MatchAny(any=accessible_doc_ids))
+        )
+
+    # 版本模式控制 is_latest 过滤
+    if version_mode == "all_versions":
+        pass  # 不加 is_latest 过滤，检索所有版本
+    elif version_mode == "specific":
+        pass  # 已通过 doc_id 精确指定，不需要 is_latest
+    else:
+        # 默认只检索最新版本
+        must_conditions.append(
+            FieldCondition(key="is_latest", match=MatchValue(value=True))
+        )
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
@@ -166,6 +184,8 @@ async def _bm25_search(
     query: str,
     doc_id: str | None = None,
     metadata_filters: dict | None = None,
+    version_mode: str | None = None,
+    accessible_doc_ids: list[str] | None = None,
 ) -> list[RetrievedChunk]:
     """通过 Elasticsearch 进行 BM25 关键词检索"""
     es = get_es_client()
@@ -182,11 +202,18 @@ async def _bm25_search(
         }
     ]
 
-    filter_clauses = [{"term": {"is_latest": True}}]
+    filter_clauses = []
+    # 版本模式控制 is_latest 过滤
+    if version_mode not in ("all_versions", "specific"):
+        filter_clauses.append({"term": {"is_latest": True}})
 
     if doc_id:
         filter_clauses.append({"term": {"doc_id": doc_id}})
-        
+
+    # Phase 5: 权限过滤 — 在 BM25 检索层也过滤无权文档
+    if accessible_doc_ids is not None:
+        filter_clauses.append({"terms": {"doc_id": accessible_doc_ids}})
+
     if metadata_filters:
         for k, v in metadata_filters.items():
             if v is not None:

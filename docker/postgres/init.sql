@@ -1,6 +1,6 @@
 -- ==========================================================================
 -- DocAI Platform - Database Schema
--- 包含 Phase 1-3 的完整表结构（Phase 2-3 的字段预留但暂不使用）
+-- 包含 Phase 1-5 的完整表结构
 -- ==========================================================================
 
 -- 启用必要扩展
@@ -27,6 +27,7 @@ CREATE TABLE documents (
     original_filename TEXT NOT NULL,
     file_path       TEXT NOT NULL,          -- MinIO 中的路径
     file_size_bytes BIGINT,
+    file_hash       VARCHAR(64),             -- SHA-256 文件指纹（去重用）
     mime_type       VARCHAR(100),
     page_count      INT,
 
@@ -67,6 +68,8 @@ CREATE INDEX idx_documents_group ON documents(group_id);
 CREATE INDEX idx_documents_latest ON documents(is_latest) WHERE is_latest = TRUE;
 CREATE INDEX idx_documents_title_trgm ON documents USING gin(title gin_trgm_ops);
 CREATE INDEX idx_documents_tags ON documents USING gin(tags);
+CREATE UNIQUE INDEX idx_documents_file_hash ON documents(file_hash)
+    WHERE file_hash IS NOT NULL AND processing_status != 'error';
 
 -- 文档 chunks 元数据（向量存在 Qdrant，全文存在 ES，这里存元数据）
 CREATE TABLE chunks (

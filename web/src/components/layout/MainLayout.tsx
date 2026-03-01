@@ -93,7 +93,7 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               <span className="text-sm font-medium text-gray-500">
-                Phase 1 MVP - Single Document RAG
+                Phase 3 - Version Management & Diff
               </span>
             </div>
           </div>

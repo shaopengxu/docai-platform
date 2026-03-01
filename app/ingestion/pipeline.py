@@ -5,9 +5,9 @@ DocAI Platform - 文档入库 Pipeline
 
 from __future__ import annotations
 
-import io
+import asyncio
+import hashlib
 import os
-import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +19,7 @@ from app.core.embedding import encode_texts
 from app.core.infrastructure import (
     get_db_session,
     get_es_client,
+    get_minio_client,
     get_qdrant_client,
 )
 from app.core.models import Chunk, ChunkType, ParsedDocument, ProcessingStatus
@@ -29,6 +30,8 @@ from app.ingestion.summarizer import (
     generate_doc_summary_and_entities,
     generate_section_summary,
 )
+from app.versioning.detector import version_detector
+from app.versioning.diff_engine import diff_engine
 from config.settings import settings
 
 logger = structlog.get_logger()
@@ -36,6 +39,10 @@ logger = structlog.get_logger()
 
 class IngestionPipeline:
     """文档入库完整 Pipeline"""
+
+    def __init__(self):
+        # 保存后台任务引用，防止 asyncio task 被 GC 回收
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def process_document(
         self,
@@ -68,13 +75,24 @@ class IngestionPipeline:
         )
 
         try:
-            # Step 0: 注册文档到 PostgreSQL (状态: pending)
+            # Step 0a: 文件指纹去重
+            file_hash = self._compute_file_hash(file_path)
+            existing_doc = await self._check_file_hash(file_hash)
+            if existing_doc:
+                raise ValueError(
+                    f"文件内容完全相同的文档已存在 "
+                    f"(doc_id={existing_doc['doc_id']}, "
+                    f"title={existing_doc['title']})"
+                )
+
+            # Step 0b: 注册文档到 PostgreSQL (状态: pending)
             file_size = os.path.getsize(file_path)
             await self._register_document(
                 doc_id=doc_id,
                 title=Path(original_filename).stem,
                 original_filename=original_filename,
                 file_size=file_size,
+                file_hash=file_hash,
                 doc_type=doc_type,
                 tags=tags,
             )
@@ -110,6 +128,13 @@ class IngestionPipeline:
             )
             chunks.extend(summary_chunks)
 
+            # Step 3.6: 版本检测 (Phase 3)
+            # 返回值表示当前文档是否为最新版（如果上传的是旧版文档，则为 False）
+            is_doc_latest = await self._detect_and_link_version(
+                doc_id, parsed_doc.title or Path(original_filename).stem,
+                doc_summary, doc_type,
+            )
+
             # Step 3.8: Contextual Retrieval 增强
             await self._add_contextual_descriptions(chunks, parsed_doc.title, doc_summary)
 
@@ -118,8 +143,9 @@ class IngestionPipeline:
             embeddings = self._compute_embeddings(chunks)
 
             # Step 5: 存储到 Qdrant + ES + PostgreSQL
-            await self._store_to_qdrant(chunks, embeddings, doc_id)
-            await self._store_to_elasticsearch(chunks, doc_id)
+            # is_doc_latest 决定新 chunks 的 is_latest 标记
+            await self._store_to_qdrant(chunks, embeddings, doc_id, is_latest=is_doc_latest)
+            await self._store_to_elasticsearch(chunks, doc_id, is_latest=is_doc_latest)
             await self._store_chunks_metadata(chunks, doc_id)
 
             # Step 6: 更新文档状态为 ready
@@ -151,12 +177,37 @@ class IngestionPipeline:
     # PostgreSQL 操作
     # ─────────────────────────────────────────────────────────────────────
 
+    def _compute_file_hash(self, file_path: str) -> str:
+        """计算文件的 SHA-256 指纹"""
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for block in iter(lambda: f.read(8192), b""):
+                sha256.update(block)
+        return sha256.hexdigest()
+
+    async def _check_file_hash(self, file_hash: str) -> dict | None:
+        """检查是否已存在相同 hash 的文档"""
+        async with get_db_session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT doc_id, title FROM documents
+                    WHERE file_hash = :hash AND processing_status != 'error'
+                    LIMIT 1
+                """),
+                {"hash": file_hash},
+            )
+            row = result.fetchone()
+        if row:
+            return {"doc_id": str(row[0]), "title": row[1]}
+        return None
+
     async def _register_document(
         self,
         doc_id: str,
         title: str,
         original_filename: str,
         file_size: int,
+        file_hash: str,
         doc_type: str | None,
         tags: list[str],
     ):
@@ -166,10 +217,11 @@ class IngestionPipeline:
                 text("""
                     INSERT INTO documents (
                         doc_id, title, original_filename, file_path,
-                        file_size_bytes, doc_type, tags, processing_status
+                        file_size_bytes, file_hash, doc_type, tags,
+                        processing_status
                     ) VALUES (
                         :doc_id, :title, :original_filename, '',
-                        :file_size, :doc_type, :tags, 'pending'
+                        :file_size, :file_hash, :doc_type, :tags, 'pending'
                     )
                 """),
                 {
@@ -177,6 +229,7 @@ class IngestionPipeline:
                     "title": title,
                     "original_filename": original_filename,
                     "file_size": file_size,
+                    "file_hash": file_hash,
                     "doc_type": doc_type,
                     "tags": tags,
                 },
@@ -273,34 +326,314 @@ class IngestionPipeline:
             )
 
     async def _store_chunks_metadata(self, chunks: list[Chunk], doc_id: str):
-        """将 chunk 元数据存入 PostgreSQL"""
+        """将 chunk 元数据批量存入 PostgreSQL"""
+        if not chunks:
+            return
+
         async with get_db_session() as session:
-            for chunk in chunks:
-                await session.execute(
-                    text("""
-                        INSERT INTO chunks (
-                            chunk_id, doc_id, section_path, page_numbers,
-                            chunk_index, content, chunk_type, token_count,
-                            qdrant_point_id, es_doc_id
-                        ) VALUES (
-                            :chunk_id, :doc_id, :section_path, :page_numbers,
-                            :chunk_index, :content, :chunk_type, :token_count,
-                            :qdrant_point_id, :es_doc_id
-                        )
-                    """),
-                    {
-                        "chunk_id": chunk.chunk_id,
-                        "doc_id": doc_id,
-                        "section_path": chunk.section_path,
-                        "page_numbers": chunk.page_numbers,
-                        "chunk_index": chunk.chunk_index,
-                        "content": chunk.content,
-                        "chunk_type": chunk.chunk_type.value,
-                        "token_count": chunk.token_count,
-                        "qdrant_point_id": chunk.chunk_id,  # 与 Qdrant point_id 一致
-                        "es_doc_id": chunk.chunk_id,         # 与 ES doc_id 一致
-                    },
+            params_list = [
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "doc_id": doc_id,
+                    "section_path": chunk.section_path,
+                    "page_numbers": chunk.page_numbers,
+                    "chunk_index": chunk.chunk_index,
+                    "content": chunk.content,
+                    "chunk_type": chunk.chunk_type.value,
+                    "token_count": chunk.token_count,
+                    "qdrant_point_id": chunk.chunk_id,
+                    "es_doc_id": chunk.chunk_id,
+                }
+                for chunk in chunks
+            ]
+            stmt = text("""
+                INSERT INTO chunks (
+                    chunk_id, doc_id, section_path, page_numbers,
+                    chunk_index, content, chunk_type, token_count,
+                    qdrant_point_id, es_doc_id
+                ) VALUES (
+                    :chunk_id, :doc_id, :section_path, :page_numbers,
+                    :chunk_index, :content, :chunk_type, :token_count,
+                    :qdrant_point_id, :es_doc_id
                 )
+            """)
+            for params in params_list:
+                await session.execute(stmt, params)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 版本管理 (Phase 3)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _detect_and_link_version(
+        self,
+        doc_id: str,
+        title: str,
+        doc_summary: str,
+        doc_type: str | None,
+    ) -> bool:
+        """
+        检测新文档是否为已有文档的新版本，如果是则建立版本链。
+
+        Returns:
+            bool: 当前文档是否为最新版 (is_latest)。
+                  - True: 新上传的文档更新（默认情况），或未找到版本匹配。
+                  - False: 新上传的文档其实是旧版本。
+        """
+        try:
+            match = await version_detector.detect(
+                new_doc_id=doc_id,
+                title=title,
+                doc_summary=doc_summary,
+                doc_type=doc_type,
+            )
+
+            if not match.is_new_version or not match.matched_doc_id:
+                logger.info("No version match found", doc_id=doc_id)
+                return True  # 全新文档，默认为最新
+
+            logger.info(
+                "Version match found",
+                new_doc_id=doc_id,
+                matched_doc_id=match.matched_doc_id,
+                confidence=match.confidence,
+                new_is_newer=match.new_is_newer,
+                detected_version=match.detected_version,
+            )
+
+            if match.new_is_newer:
+                # 常规情况：上传的文档比已有的更新
+                await self._link_version(doc_id, match.matched_doc_id)
+                is_doc_latest = True
+            else:
+                # 反向情况：上传的文档其实比已有的更旧
+                await self._link_as_older_version(
+                    doc_id, match.matched_doc_id, match.detected_version
+                )
+                is_doc_latest = False
+
+            # 异步触发差异计算（不阻塞主流程）
+            # 保存 task 引用到 set，防止被 GC 回收
+            if match.new_is_newer:
+                old_id, new_id = match.matched_doc_id, doc_id
+            else:
+                old_id, new_id = doc_id, match.matched_doc_id
+            task = asyncio.create_task(
+                self._compute_diff_background(old_id, new_id)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+            return is_doc_latest
+
+        except Exception as e:
+            logger.warning(
+                "Version detection failed (non-fatal)",
+                doc_id=doc_id,
+                error=str(e),
+            )
+            return True  # 出错时保守处理，当作最新版
+
+    async def _link_version(self, new_doc_id: str, old_doc_id: str):
+        """建立版本链：新文档指向旧文档，旧文档标记为 superseded（上传的更新）"""
+        async with get_db_session() as session:
+            # 获取旧文档的版本号
+            result = await session.execute(
+                text("SELECT version_number FROM documents WHERE doc_id = :doc_id"),
+                {"doc_id": old_doc_id},
+            )
+            row = result.fetchone()
+            old_version = row[0] if row else "v1.0"
+
+            # 计算新版本号
+            new_version = self._increment_version(old_version)
+
+            # 更新新文档: 设置 parent_version_id 和版本号
+            await session.execute(
+                text("""
+                    UPDATE documents
+                    SET parent_version_id = :parent_id,
+                        version_number = :version
+                    WHERE doc_id = :doc_id
+                """),
+                {
+                    "doc_id": new_doc_id,
+                    "parent_id": old_doc_id,
+                    "version": new_version,
+                },
+            )
+
+            # 更新旧文档: 标记为 superseded
+            await session.execute(
+                text("""
+                    UPDATE documents
+                    SET is_latest = FALSE,
+                        version_status = 'superseded',
+                        superseded_at = NOW()
+                    WHERE doc_id = :doc_id
+                """),
+                {"doc_id": old_doc_id},
+            )
+
+        # 更新旧文档 chunks 在 Qdrant/ES 中的 is_latest 标记
+        await self._mark_chunks_not_latest(old_doc_id)
+
+        logger.info(
+            "Version link established (uploaded is newer)",
+            old_doc_id=old_doc_id,
+            new_doc_id=new_doc_id,
+            old_version=old_version,
+            new_version=new_version,
+        )
+
+    async def _link_as_older_version(
+        self,
+        uploaded_doc_id: str,
+        existing_doc_id: str,
+        detected_version: str | None = None,
+    ):
+        """
+        反向版本链：上传的文档其实比已有文档更旧。
+
+        将上传文档插入到版本链中作为已有文档的父版本：
+        - 已有文档的 parent_version_id 指向上传文档
+        - 上传文档标记为 is_latest=FALSE, superseded
+        - 已有文档保持 is_latest=TRUE
+        """
+        async with get_db_session() as session:
+            # 获取已有文档的信息
+            result = await session.execute(
+                text("""
+                    SELECT version_number, parent_version_id
+                    FROM documents WHERE doc_id = :doc_id
+                """),
+                {"doc_id": existing_doc_id},
+            )
+            row = result.fetchone()
+            existing_version = row[0] if row else "v1.0"
+            existing_parent_id = str(row[1]) if row and row[1] else None
+
+            # 计算上传文档的版本号
+            if detected_version:
+                older_version = detected_version
+            else:
+                older_version = self._decrement_version(existing_version)
+
+            # 上传文档: 标记为旧版本，继承已有文档的旧 parent
+            await session.execute(
+                text("""
+                    UPDATE documents
+                    SET parent_version_id = :old_parent_id,
+                        version_number = :version,
+                        is_latest = FALSE,
+                        version_status = 'superseded',
+                        superseded_at = NOW()
+                    WHERE doc_id = :doc_id
+                """),
+                {
+                    "doc_id": uploaded_doc_id,
+                    "old_parent_id": existing_parent_id,
+                    "version": older_version,
+                },
+            )
+
+            # 已有文档: 将 parent 指向新上传的旧版本
+            await session.execute(
+                text("""
+                    UPDATE documents
+                    SET parent_version_id = :new_parent_id
+                    WHERE doc_id = :doc_id
+                """),
+                {
+                    "doc_id": existing_doc_id,
+                    "new_parent_id": uploaded_doc_id,
+                },
+            )
+
+        logger.info(
+            "Version link established (uploaded is older)",
+            uploaded_doc_id=uploaded_doc_id,
+            existing_doc_id=existing_doc_id,
+            uploaded_version=older_version,
+            existing_version=existing_version,
+        )
+
+    async def _mark_chunks_not_latest(self, doc_id: str):
+        """将某个文档的所有 chunks 在 Qdrant 和 ES 中标记为非最新"""
+        # 获取该文档的所有 chunk_ids
+        async with get_db_session() as session:
+            result = await session.execute(
+                text("SELECT chunk_id FROM chunks WHERE doc_id = :doc_id"),
+                {"doc_id": doc_id},
+            )
+            chunk_ids = [str(row[0]) for row in result.fetchall()]
+
+        if not chunk_ids:
+            return
+
+        # 更新 Qdrant
+        try:
+            from qdrant_client.models import PointIdsList
+            qdrant = get_qdrant_client()
+            await qdrant.set_payload(
+                collection_name=settings.qdrant_collection_name,
+                payload={"is_latest": False},
+                points=PointIdsList(points=chunk_ids),
+            )
+        except Exception as e:
+            logger.warning("Failed to update Qdrant is_latest", error=str(e))
+
+        # 更新 Elasticsearch
+        try:
+            es = get_es_client()
+            await es.update_by_query(
+                index=settings.es_index_name,
+                body={
+                    "script": {
+                        "source": "ctx._source.is_latest = false",
+                        "lang": "painless",
+                    },
+                    "query": {"term": {"doc_id": doc_id}},
+                },
+            )
+        except Exception as e:
+            logger.warning("Failed to update ES is_latest", error=str(e))
+
+    def _increment_version(self, version: str) -> str:
+        """v1.0 -> v2.0, v2.3 -> v3.0, etc."""
+        try:
+            v = version.lstrip("v")
+            parts = v.split(".")
+            major = int(parts[0]) + 1
+            return f"v{major}.0"
+        except (ValueError, IndexError):
+            return "v2.0"
+
+    def _decrement_version(self, version: str) -> str:
+        """v2.0 -> v1.0, v3.0 -> v2.0, etc. 最低为 v1.0"""
+        try:
+            v = version.lstrip("v")
+            parts = v.split(".")
+            major = max(int(parts[0]) - 1, 1)
+            return f"v{major}.0"
+        except (ValueError, IndexError):
+            return "v1.0"
+
+    async def _compute_diff_background(self, old_doc_id: str, new_doc_id: str):
+        """后台计算版本差异（不阻塞主流程）"""
+        try:
+            await diff_engine.compute_full_diff(old_doc_id, new_doc_id)
+            logger.info(
+                "Background diff computation completed",
+                old_doc_id=old_doc_id,
+                new_doc_id=new_doc_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Background diff computation failed",
+                old_doc_id=old_doc_id,
+                new_doc_id=new_doc_id,
+                error=str(e),
+            )
 
     # ─────────────────────────────────────────────────────────────────────
     # 摘要生成与上下文增强 (Phase 2)
@@ -325,7 +658,7 @@ class IngestionPipeline:
 
         # 1. 章节级摘要
         for section_path, section_chunks in sections.items():
-            content = "\\n".join(c.content for c in section_chunks)
+            content = "\n".join(c.content for c in section_chunks)
             summary_text, key_points = await generate_section_summary(title, section_path, content)
             
             if summary_text:
@@ -340,12 +673,12 @@ class IngestionPipeline:
                     content=summary_text,
                 )
                 summary_chunks.append(sc)
-                section_summaries_text_parts.append(f"【{section_path}】\\n{summary_text}")
+                section_summaries_text_parts.append(f"【{section_path}】\n{summary_text}")
 
         # 2. 文档级摘要及实体提取
         doc_summary = ""
         if section_summaries_text_parts:
-            combined_section_summaries = "\\n\\n".join(section_summaries_text_parts)
+            combined_section_summaries = "\n\n".join(section_summaries_text_parts)
             doc_summary, key_entities = await generate_doc_summary_and_entities(
                 title, combined_section_summaries
             )
@@ -374,7 +707,6 @@ class IngestionPipeline:
         logger.info("Adding contextual descriptions", chunks_count=len(chunks))
         
         # 为了速度可以考虑并发执行
-        import asyncio
         async def process_chunk(chunk: Chunk):
             if chunk.chunk_type == ChunkType.TEXT:
                 desc = await generate_contextual_description(
@@ -382,7 +714,7 @@ class IngestionPipeline:
                 )
                 if desc:
                     # 按照架构设计，把上下文加在内容开头
-                    chunk.content = f"{desc}\\n\\n{chunk.content}"
+                    chunk.content = f"{desc}\n\n{chunk.content}"
 
         # 限制并发度以避免 API 请求过多
         semaphore = asyncio.Semaphore(10)
@@ -399,19 +731,20 @@ class IngestionPipeline:
     async def _upload_to_minio(
         self, file_path: str, doc_id: str, original_filename: str
     ) -> str:
-        """上传原文到 MinIO"""
+        """上传原文到 MinIO（同步 SDK，通过 executor 避免阻塞事件循环）"""
+        import functools
+
         minio = get_minio_client()
         bucket = settings.minio_bucket_documents
-
-        # 确保 bucket 存在
-        if not minio.bucket_exists(bucket):
-            minio.make_bucket(bucket)
-
-        # 存储路径：documents/{doc_id}/{original_filename}
-        ext = Path(original_filename).suffix
         object_name = f"{doc_id}/{original_filename}"
+        loop = asyncio.get_running_loop()
 
-        minio.fput_object(bucket, object_name, file_path)
+        def _sync_upload():
+            if not minio.bucket_exists(bucket):
+                minio.make_bucket(bucket)
+            minio.fput_object(bucket, object_name, file_path)
+
+        await loop.run_in_executor(None, _sync_upload)
 
         logger.info(
             "File uploaded to MinIO",
@@ -443,6 +776,7 @@ class IngestionPipeline:
         chunks: list[Chunk],
         embeddings: list[list[float]],
         doc_id: str,
+        is_latest: bool = True,
     ):
         """将 chunk 向量和 payload 存入 Qdrant"""
         from qdrant_client.models import PointStruct
@@ -466,7 +800,7 @@ class IngestionPipeline:
                     "token_count": chunk.token_count,
                     "group_id": chunk.group_id,
                     "department": chunk.department,
-                    "is_latest": True,  # Phase 3 版本管理用
+                    "is_latest": is_latest,
                 },
             )
             points.append(point)
@@ -484,37 +818,47 @@ class IngestionPipeline:
             "Chunks stored in Qdrant",
             doc_id=doc_id,
             point_count=len(points),
+            is_latest=is_latest,
         )
 
     # ─────────────────────────────────────────────────────────────────────
     # Elasticsearch 存储
     # ─────────────────────────────────────────────────────────────────────
 
-    async def _store_to_elasticsearch(self, chunks: list[Chunk], doc_id: str):
-        """将 chunk 全文存入 Elasticsearch（用于 BM25 检索）"""
+    async def _store_to_elasticsearch(
+        self, chunks: list[Chunk], doc_id: str, is_latest: bool = True
+    ):
+        """将 chunk 全文批量存入 Elasticsearch（用于 BM25 检索）"""
+        from datetime import timezone
+        from elasticsearch.helpers import async_bulk
+
         es = get_es_client()
         index = settings.es_index_name
+        now = datetime.now(timezone.utc).isoformat()
 
+        actions = []
         for chunk in chunks:
-            doc_body = {
-                "doc_id": doc_id,
-                "doc_title": chunk.doc_title,
-                "section_path": chunk.section_path,
-                "page_numbers": chunk.page_numbers,
-                "chunk_index": chunk.chunk_index,
-                "chunk_type": chunk.chunk_type.value,
-                "content": chunk.content,
-                "token_count": chunk.token_count,
-                "group_id": chunk.group_id,
-                "department": chunk.department,
-                "is_latest": True,
-                "created_at": datetime.utcnow().isoformat(),
-            }
-            await es.index(
-                index=index,
-                id=chunk.chunk_id,
-                document=doc_body,
-            )
+            actions.append({
+                "_index": index,
+                "_id": chunk.chunk_id,
+                "_source": {
+                    "doc_id": doc_id,
+                    "doc_title": chunk.doc_title,
+                    "section_path": chunk.section_path,
+                    "page_numbers": chunk.page_numbers,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk_type": chunk.chunk_type.value,
+                    "content": chunk.content,
+                    "token_count": chunk.token_count,
+                    "group_id": chunk.group_id,
+                    "department": chunk.department,
+                    "is_latest": is_latest,
+                    "created_at": now,
+                },
+            })
+
+        if actions:
+            await async_bulk(es, actions)
 
         # 刷新索引使数据立即可搜索
         await es.indices.refresh(index=index)
@@ -523,6 +867,7 @@ class IngestionPipeline:
             "Chunks stored in Elasticsearch",
             doc_id=doc_id,
             chunk_count=len(chunks),
+            is_latest=is_latest,
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -561,13 +906,18 @@ class IngestionPipeline:
             body={"query": {"term": {"doc_id": doc_id}}},
         )
 
-        # 4. 从 MinIO 删除
+        # 4. 从 MinIO 删除（同步 SDK，通过 executor 避免阻塞）
         try:
+            loop = asyncio.get_running_loop()
             minio = get_minio_client()
             bucket = settings.minio_bucket_documents
-            objects = minio.list_objects(bucket, prefix=f"{doc_id}/", recursive=True)
-            for obj in objects:
-                minio.remove_object(bucket, obj.object_name)
+
+            def _sync_delete():
+                objects = minio.list_objects(bucket, prefix=f"{doc_id}/", recursive=True)
+                for obj in objects:
+                    minio.remove_object(bucket, obj.object_name)
+
+            await loop.run_in_executor(None, _sync_delete)
         except Exception as e:
             logger.warning("Failed to delete from MinIO", doc_id=doc_id, error=str(e))
 

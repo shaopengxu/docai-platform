@@ -53,6 +53,10 @@ dependencies = [
     "structlog>=24.4.0",              # 结构化日志
     "tqdm>=4.67.0",                   # 进度条
     "PyYAML>=6.0.1",                  # YAML 解析
+
+    # ── 认证 (Phase 5) ──
+    "PyJWT>=2.9.0",                   # JWT 生成/验证
+    "bcrypt>=4.2.0",                  # 密码哈希
 ]
 
 [project.optional-dependencies]

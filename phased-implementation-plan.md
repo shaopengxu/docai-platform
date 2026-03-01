@@ -26,20 +26,20 @@ Phase 5 ─── 生产化加固 & 持续优化 ──────────�
 
 ### 0.2 技术选型决策清单
 
-| 组件 | 推荐方案 | 备选方案 | 决策依据 |
-|------|---------|---------|---------|
-| **LLM** | Claude Sonnet 4 (API) | GPT-4o / 开源 Qwen2.5-72B | 中文能力、长上下文、成本平衡 |
-| **嵌入模型** | BGE-M3 (自部署) | Cohere Embed v3 / Jina v3 | 中文多语言支持、可私有化部署 |
-| **向量数据库** | Qdrant (Docker 自部署) | Weaviate / pgvector | 性能好、混合检索原生支持 |
-| **全文搜索** | Elasticsearch 8.x | OpenSearch | 中文分词 (IK)、成熟稳定 |
-| **Reranker** | BGE-Reranker-v2-m3 | Cohere Rerank v3 | 中文效果好、可私有化 |
-| **文档解析** | Docling + PyMuPDF | Unstructured.io / LlamaParse | 开源、表格识别能力强 |
-| **OCR（扫描件）** | Surya / PaddleOCR | Azure Document Intelligence | 中文识别率高 |
-| **应用框架** | LlamaIndex + FastAPI | LangChain + LangGraph | LlamaIndex 文档处理成熟 |
-| **元数据库** | PostgreSQL 16 | MongoDB | 版本关系适合关系型 |
-| **对象存储** | MinIO (自部署) | 阿里云 OSS / AWS S3 | 存放文档原文 |
-| **前端** | Next.js + React | Vue 3 | 生态丰富 |
-| **消息队列** | Redis Streams / RabbitMQ | Kafka (如文档量极大) | 异步任务分发 |
+| 组件              | 推荐方案                 | 备选方案                     | 决策依据                     |
+| ----------------- | ------------------------ | ---------------------------- | ---------------------------- |
+| **LLM**           | Claude Sonnet 4 (API)    | GPT-4o / 开源 Qwen2.5-72B    | 中文能力、长上下文、成本平衡 |
+| **嵌入模型**      | BGE-M3 (自部署)          | Cohere Embed v3 / Jina v3    | 中文多语言支持、可私有化部署 |
+| **向量数据库**    | Qdrant (Docker 自部署)   | Weaviate / pgvector          | 性能好、混合检索原生支持     |
+| **全文搜索**      | Elasticsearch 8.x        | OpenSearch                   | 中文分词 (IK)、成熟稳定      |
+| **Reranker**      | BGE-Reranker-v2-m3       | Cohere Rerank v3             | 中文效果好、可私有化         |
+| **文档解析**      | Docling + PyMuPDF        | Unstructured.io / LlamaParse | 开源、表格识别能力强         |
+| **OCR（扫描件）** | Surya / PaddleOCR        | Azure Document Intelligence  | 中文识别率高                 |
+| **应用框架**      | LlamaIndex + FastAPI     | LangChain + LangGraph        | LlamaIndex 文档处理成熟      |
+| **元数据库**      | PostgreSQL 16            | MongoDB                      | 版本关系适合关系型           |
+| **对象存储**      | MinIO (自部署)           | 阿里云 OSS / AWS S3          | 存放文档原文                 |
+| **前端**          | Next.js + React          | Vue 3                        | 生态丰富                     |
+| **消息队列**      | Redis Streams / RabbitMQ | Kafka (如文档量极大)         | 异步任务分发                 |
 
 ### 0.3 环境搭建
 
@@ -191,14 +191,14 @@ def semantic_chunk(parsed_doc: ParsedDocument) -> list[Chunk]:
 
 ### 1.5 验证标准
 
-| 指标 | 目标 | 测试方法 |
-|------|------|---------|
-| 文档解析成功率 | ≥ 95% | 30 份测试文档全部正确解析 |
-| 检索召回率 Recall@5 | ≥ 80% | 测试问题集中的正确答案出现在 top 5 |
-| 答案准确率 | ≥ 75% | 人工评审答案的正确性 |
-| 引用准确率 | ≥ 85% | 标注的来源确实包含答案依据 |
-| 单文档处理时间 | < 60 秒/10 页 | 端到端计时 |
-| 查询响应时间 | < 5 秒 | 从提问到答案返回 |
+| 指标                | 目标          | 测试方法                           |
+| ------------------- | ------------- | ---------------------------------- |
+| 文档解析成功率      | ≥ 95%         | 30 份测试文档全部正确解析          |
+| 检索召回率 Recall@5 | ≥ 80%         | 测试问题集中的正确答案出现在 top 5 |
+| 答案准确率          | ≥ 75%         | 人工评审答案的正确性               |
+| 引用准确率          | ≥ 85%         | 标注的来源确实包含答案依据         |
+| 单文档处理时间      | < 60 秒/10 页 | 端到端计时                         |
+| 查询响应时间        | < 5 秒        | 从提问到答案返回                   |
 
 ### 1.6 交付物
 
@@ -420,13 +420,13 @@ async def cross_document_summary(query: str, doc_ids: list[str]) -> str:
 
 ### 2.5 验证标准
 
-| 指标 | 目标 | 说明 |
-|------|------|------|
-| 跨文档总结准确率 | ≥ 70% | 人工评审总结是否涵盖所有关键信息 |
-| 跨文档总结完整度 | ≥ 75% | 是否遗漏了重要文档 |
-| Contextual Retrieval 提升 | Recall@5 提升 ≥ 10% | 对比 Phase 1 的 baseline |
-| Query 改写有效率 | ≥ 80% | 改写后的检索结果优于原始 query |
-| 总结类查询响应时间 | < 30 秒 | 涉及 5-10 份文档时 |
+| 指标                      | 目标                | 说明                             |
+| ------------------------- | ------------------- | -------------------------------- |
+| 跨文档总结准确率          | ≥ 70%               | 人工评审总结是否涵盖所有关键信息 |
+| 跨文档总结完整度          | ≥ 75%               | 是否遗漏了重要文档               |
+| Contextual Retrieval 提升 | Recall@5 提升 ≥ 10% | 对比 Phase 1 的 baseline         |
+| Query 改写有效率          | ≥ 80%               | 改写后的检索结果优于原始 query   |
+| 总结类查询响应时间        | < 30 秒             | 涉及 5-10 份文档时               |
 
 ### 2.6 交付物
 
@@ -490,59 +490,73 @@ CREATE INDEX idx_latest_version
 
 ### 3.3 核心功能模块
 
-**3.3.1 版本自动识别**
+**3.3.1 版本自动识别（含新旧判断）**
 
 ```python
 class VersionDetector:
-    """判断新上传的文档是否为已有文档的新版本"""
+    """判断新上传的文档是否为已有文档的新版本，并判断谁更新"""
     
-    async def detect(self, new_doc: ParsedDocument) -> VersionMatch | None:
+    AUTO_LINK_THRESHOLD = 0.8  # 只有置信度高于此阈值才自动关联
+    
+    async def detect(self, new_doc_id, title, doc_summary, doc_type) -> VersionMatchResult:
         candidates = []
         
-        # 策略 1: 文件名相似度
-        similar_by_name = await db.query("""
-            SELECT doc_id, title, version_number 
-            FROM documents 
-            WHERE similarity(title, $1) > 0.6
-            ORDER BY similarity(title, $1) DESC
-            LIMIT 5
-        """, new_doc.title)
-        candidates.extend(similar_by_name)
-        
-        # 策略 2: 文档摘要的向量相似度
-        new_summary_embedding = embed(new_doc.auto_summary)
-        similar_by_content = await qdrant.search(
-            collection="doc_summaries",
-            query_vector=new_summary_embedding,
-            limit=5,
-            score_threshold=0.85
+        # 策略 1: 标题相似度 (pg_trgm, similarity > 0.4)
+        title_candidates = await self._find_by_title_similarity(
+            title, new_doc_id, doc_type
         )
-        candidates.extend(similar_by_content)
+        candidates.extend(title_candidates)
         
-        # 策略 3: 关键实体匹配
-        # 如果标题、甲方乙方、合同编号等高度匹配
+        # 策略 2: 文档摘要向量相似度 (Qdrant, score > 0.75)
+        if doc_summary:
+            content_candidates = await self._find_by_content_similarity(
+                doc_summary, new_doc_id
+            )
+            candidates.extend(content_candidates)
         
-        # 去重后用 LLM 做最终判断
-        if candidates:
-            best_match = await self.llm_verify(new_doc, candidates)
-            return best_match
+        if not candidates:
+            return VersionMatchResult(is_new_version=False)
         
-        return None  # 全新文档
+        # 去重后用 LLM 做最终判断（包含新旧版本判断）
+        result = await self._llm_verify(title, doc_summary, unique_candidates)
+        return result
     
-    async def llm_verify(self, new_doc, candidates) -> VersionMatch | None:
-        """用 LLM 最终确认是否为同一文档的新版本"""
+    async def _llm_verify(self, new_title, new_summary, candidates) -> VersionMatchResult:
+        """用 LLM 最终确认是否为同一文档的不同版本，并判断谁更新"""
         prompt = f"""
-        新上传文档标题：{new_doc.title}
-        新上传文档摘要：{new_doc.auto_summary[:500]}
+        新上传文档标题：{new_title}
+        新上传文档摘要：{new_summary[:500]}
         
         候选已有文档：
         {format_candidates(candidates)}
         
-        请判断新文档是否为候选文档中某一个的新版本。
-        返回 JSON: {{"is_new_version": true/false, "matched_doc_id": "...", 
-                      "confidence": 0.95, "reason": "..."}}
+        判断标准：
+        1. 标题核心部分相同 + 内容主题一致 → 同一文档的不同版本
+        2. 区分“同一文档的不同版本”和“同一类别但不同文档”
+        3. 如果是同一文档，进一步判断谁是更新的版本，依据包括：
+           - 文档内部的版本号（v1.0、v2.0、第X版等）
+           - 文档中的日期（签署/生效/修订日期）
+           - 内容范围变化
+        
+        返回 JSON:
+        {{
+          "is_new_version": true/false,
+          "matched_doc_id": "...",
+          "confidence": 0.95,
+          "reason": "...",
+          "new_is_newer": true/false,      // 上传文档是否确实比已有文档更新
+          "detected_version": "v2.0"       // 从文档内容中提取的版本号
+        }}
         """
-        return llm.generate_json(prompt)
+        result = await llm.generate_json(prompt)
+        return VersionMatchResult(
+            is_new_version=result["is_new_version"] and result["confidence"] >= 0.8,
+            matched_doc_id=result.get("matched_doc_id"),
+            confidence=result["confidence"],
+            reason=result["reason"],
+            new_is_newer=result.get("new_is_newer", True),
+            detected_version=result.get("detected_version"),
+        )
 ```
 
 **3.3.2 三层差异对比引擎**
@@ -701,28 +715,42 @@ class VersionAwareRetriever:
 新文档上传
     │
     ▼
-[Phase 1: 解析 + 分块 + 嵌入]
+[Phase 1: 解析 + 分块]
     │
     ▼
-[版本检测] ──→ 是否为已有文档的新版本？
+[Phase 2: 生成摘要 + 实体提取]
+    │
+    ▼
+[版本检测] ──→ 是否为已有文档的不同版本？
     │              │
     │       是     │      否
     │       ▼      │      ▼
-    │  [关联版本链]  │  [作为全新文档入库]
-    │  - 设置 parent_version_id
-    │  - 标记旧版 is_latest=FALSE
-    │  - 旧版 status → superseded
-    │              │
-    │              ▼
+    │  [判断新旧]   │  [作为全新文档入库]
+    │       │      │  │  全部 chunks is_latest=TRUE
+    │  ┌────┴────┐
+    │  │          │
+    │  ▼          ▼
+    │ 上传更新    上传更旧
+    │ (new_is_newer=true)  (new_is_newer=false)
+    │  │          │
+    │  ▼          ▼
+    │ [_link_version]     [_link_as_older_version]
+    │  - 新文档.parent = 旧文档    - 新文档插入为已有文档的父版本
+    │  - 新文档 is_latest=TRUE     - 新文档 is_latest=FALSE
+    │  - 旧文档 is_latest=FALSE    - 已有文档保持 is_latest=TRUE
+    │  - 旧文档 status=superseded  - 新文档 status=superseded
+    │  │          │
+    │  └────┬────┘
+    │       ▼
     │  [触发差异计算（异步）]
     │  - 文本级 diff
     │  - 结构级 diff
     │  - 语义级 diff (LLM)
     │  - 存入 version_diffs 表
-    │              │
-    ▼              ▼
-[Phase 2: 生成摘要 + 上下文增强嵌入]
-    │
+    │       │
+    ▼       ▼
+[上下文增强嵌入 + 存储]
+    │  chunks 使用 is_doc_latest 决定 is_latest 标记
     ▼
 [完成] 用户可查询最新版本、对比版本、追溯历史
 ```
@@ -736,13 +764,13 @@ class VersionAwareRetriever:
 
 ### 3.6 验证标准
 
-| 指标 | 目标 |
-|------|------|
-| 版本自动识别准确率 | ≥ 90% |
-| 文本级 diff 准确率 | ≥ 95% |
-| 语义变更摘要质量 | 人工评审 ≥ 80% 满意度 |
-| 版本检索正确性 | 默认查询返回最新版 100% |
-| diff 计算时间 | < 2 分钟 / 50 页文档对 |
+| 指标               | 目标                    |
+| ------------------ | ----------------------- |
+| 版本自动识别准确率 | ≥ 90%                   |
+| 文本级 diff 准确率 | ≥ 95%                   |
+| 语义变更摘要质量   | 人工评审 ≥ 80% 满意度   |
+| 版本检索正确性     | 默认查询返回最新版 100% |
+| diff 计算时间      | < 2 分钟 / 50 页文档对  |
 
 ### 3.7 交付物
 
@@ -920,13 +948,13 @@ class SmartQueryRouter:
 
 ### 4.6 验证标准
 
-| 指标 | 目标 |
-|------|------|
-| Agent 路由准确率 | ≥ 90%（正确选择处理通道） |
-| 复杂查询成功率 | ≥ 75%（Agent 能给出有用答案） |
-| Agent 平均步骤数 | ≤ 5 步（效率） |
-| Agent 超时率 | < 10%（8 步内完成） |
-| 用户满意度 | ≥ 80% |
+| 指标             | 目标                          |
+| ---------------- | ----------------------------- |
+| Agent 路由准确率 | ≥ 90%（正确选择处理通道）     |
+| 复杂查询成功率   | ≥ 75%（Agent 能给出有用答案） |
+| Agent 平均步骤数 | ≤ 5 步（效率）                |
+| Agent 超时率     | < 10%（8 步内完成）           |
+| 用户满意度       | ≥ 80%                         |
 
 ### 4.7 交付物
 
@@ -1060,31 +1088,31 @@ class EvaluationPipeline:
 
 ## 附录 A：成本估算参考
 
-| 项目 | Phase 1 月成本 | Phase 5 月成本 | 说明 |
-|------|---------------|---------------|------|
-| LLM API (Claude Sonnet) | ~$200 | ~$2,000 | 按 100 用户日均 20 查询估算 |
-| GPU 服务器 (嵌入+Reranker) | ~$500 | ~$500 | 1 张 A10/L4 足够 |
-| 云服务器 (应用+数据库) | ~$300 | ~$800 | 根据用户量弹性扩展 |
-| 对象存储 | ~$10 | ~$50 | 按 1TB 文档估算 |
-| **月总计** | **~$1,010** | **~$3,350** | |
+| 项目                       | Phase 1 月成本 | Phase 5 月成本 | 说明                        |
+| -------------------------- | -------------- | -------------- | --------------------------- |
+| LLM API (Claude Sonnet)    | ~$200          | ~$2,000        | 按 100 用户日均 20 查询估算 |
+| GPU 服务器 (嵌入+Reranker) | ~$500          | ~$500          | 1 张 A10/L4 足够            |
+| 云服务器 (应用+数据库)     | ~$300          | ~$800          | 根据用户量弹性扩展          |
+| 对象存储                   | ~$10           | ~$50           | 按 1TB 文档估算             |
+| **月总计**                 | **~$1,010**    | **~$3,350**    |                             |
 
 > 注：如选择私有化部署 LLM（如 Qwen2.5-72B），需额外 GPU 成本但可消除 API 费用。
 
 ## 附录 B：团队配置建议
 
-| Phase | 最小团队 | 建议团队 |
-|-------|---------|---------|
-| Phase 0-1 | 1 全栈 + 1 ML/NLP | 2 后端 + 1 前端 + 1 ML |
-| Phase 2-3 | 2 后端 + 1 ML | 3 后端 + 1 前端 + 1 ML + 0.5 PM |
+| Phase     | 最小团队               | 建议团队                              |
+| --------- | ---------------------- | ------------------------------------- |
+| Phase 0-1 | 1 全栈 + 1 ML/NLP      | 2 后端 + 1 前端 + 1 ML                |
+| Phase 2-3 | 2 后端 + 1 ML          | 3 后端 + 1 前端 + 1 ML + 0.5 PM       |
 | Phase 4-5 | 2 后端 + 1 ML + 1 前端 | 3 后端 + 2 前端 + 1 ML + 1 SRE + 1 PM |
 
 ## 附录 C：关键风险与应对
 
-| 风险 | 影响 | 应对策略 |
-|------|------|---------|
-| LLM API 不稳定/限流 | 查询失败 | 多 LLM 备选 + 降级策略 |
-| 文档解析质量差 | 检索不准 | 多引擎组合 + 人工抽检 |
-| 向量库数据量增长超预期 | 性能下降 | 分片策略 + 定期清理旧版本索引 |
-| 跨文档总结幻觉 | 用户误导 | 强制引用 + 置信度评分 + 人工评审 |
-| 版本识别误判 | 版本混乱 | 高阈值 + 人工确认兜底 |
-| LLM 成本超预期 | 预算压力 | 缓存 + 小模型做轻量任务 + Token 监控 |
+| 风险                   | 影响     | 应对策略                             |
+| ---------------------- | -------- | ------------------------------------ |
+| LLM API 不稳定/限流    | 查询失败 | 多 LLM 备选 + 降级策略               |
+| 文档解析质量差         | 检索不准 | 多引擎组合 + 人工抽检                |
+| 向量库数据量增长超预期 | 性能下降 | 分片策略 + 定期清理旧版本索引        |
+| 跨文档总结幻觉         | 用户误导 | 强制引用 + 置信度评分 + 人工评审     |
+| 版本识别误判           | 版本混乱 | 高阈值 + 人工确认兜底                |
+| LLM 成本超预期         | 预算压力 | 缓存 + 小模型做轻量任务 + Token 监控 |
