@@ -25,9 +25,13 @@ async def generate_section_summary(title: str, section_path: str, content: str) 
         logger.error("section_summary_failed", error=str(e))
         return "", []
 
-async def generate_doc_summary_and_entities(title: str, section_summaries_text: str) -> tuple[str, dict]:
-    """生成文档的整体摘要和关键实体"""
-    prompt = f"""基于以下文档《{title}》各章节的摘要，生成一份整体的文档总结（约300字），并提取文档中的关键实体。
+async def generate_doc_summary_and_entities(title: str, section_summaries_text: str) -> tuple[str, dict, str]:
+    """生成文档的整体摘要、关键实体和文档类型分类
+
+    Returns:
+        (doc_summary, key_entities, doc_type)
+    """
+    prompt = f"""基于以下文档《{title}》各章节的摘要，生成一份整体的文档总结（约300字），提取关键实体，并判断文档类型。
 返回 JSON 格式：
 {{
   "doc_summary": "...",
@@ -36,7 +40,8 @@ async def generate_doc_summary_and_entities(title: str, section_summaries_text: 
     "people": ["..."],
     "dates": ["..."],
     "amounts": ["..."]
-  }}
+  }},
+  "doc_type": "从以下类型中选一个最匹配的: contract(合同/协议), report(报告), policy(政策/制度), manual(手册/指南), standard(标准/规范), regulation(法规/条例), proposal(方案/提案), minutes(会议纪要), financial(财务报表), technical(技术文档), other(其他)"
 }}
 
 各章节摘要：
@@ -44,10 +49,14 @@ async def generate_doc_summary_and_entities(title: str, section_summaries_text: 
 """
     try:
         res = await llm_light.generate_json(prompt)
-        return res.get("doc_summary", ""), res.get("key_entities", {})
+        doc_type = res.get("doc_type", "other")
+        # 规范化：只保留括号前的英文标识
+        if "(" in doc_type:
+            doc_type = doc_type.split("(")[0].strip()
+        return res.get("doc_summary", ""), res.get("key_entities", {}), doc_type
     except Exception as e:
         logger.error("doc_summary_failed", error=str(e))
-        return "", {}
+        return "", {}, "other"
 
 async def generate_contextual_description(doc_title: str, doc_summary: str, section_path: str, chunk_content: str) -> str:
     """生成用于 Contextual Retrieval 的 chunk 描述"""

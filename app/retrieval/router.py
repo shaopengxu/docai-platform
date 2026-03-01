@@ -29,17 +29,10 @@ async def route_query(question: str, user_filters: dict | None = None) -> QueryP
     prompt = f"""分析以下用户问题，针对一个企业文档库系统，返回 JSON：
 问题：{question}
 
-提供的已知用户限制条件（如果有的话）：
-{user_filters}
-
 返回格式：
 {{
   "query_type": "factual|summary|comparison|version_diff|complex_analysis",
   "search_queries": ["改写后的优化的检索词或原始问题", "可选的其他检索角度"],
-  "metadata_filters": {{
-    "doc_type": "如果问题明确提到需要找某种类型的手册或合同",
-    "group_id": null
-  }},
   "needs_multi_doc": true/false,
   "estimated_scope": "narrow|medium|broad",
   "route": "simple_rag|enhanced_rag|agent"
@@ -65,12 +58,9 @@ async def route_query(question: str, user_filters: dict | None = None) -> QueryP
     try:
         res = await llm_light.generate_json(prompt)
 
-        # Merge user_filters into metadata_filters
-        metadata_filters = res.get("metadata_filters", {})
-        metadata_filters.update(user_filters)
-
-        # Cleanup None values from metadata_filters
-        metadata_filters = {k: v for k, v in metadata_filters.items() if v is not None}
+        # metadata_filters 只使用用户在前端明确选择的过滤条件
+        # 不再由 LLM 推断 doc_type 等字段，避免误过滤
+        metadata_filters = {k: v for k, v in user_filters.items() if v is not None}
 
         # 确定路由
         route = res.get("route", "simple_rag")

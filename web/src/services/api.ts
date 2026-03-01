@@ -136,7 +136,7 @@ export class ApiClient {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE_URL}/documents/`, {
+    const response = await fetch(`${API_BASE_URL}/documents`, {
       method: 'POST',
       body: formData,
     });
@@ -150,7 +150,7 @@ export class ApiClient {
 
   static async getDocuments(page = 1, size = 50): Promise<DocumentListResponse> {
     const offset = (page - 1) * size;
-    const response = await fetch(`${API_BASE_URL}/documents/?limit=${size}&offset=${offset}`);
+    const response = await fetch(`${API_BASE_URL}/documents?limit=${size}&offset=${offset}`);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch documents: ${response.statusText}`);

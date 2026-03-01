@@ -139,6 +139,15 @@ async def ask_question(
         # ── simple_rag / enhanced_rag 路由 ──
         retrieved_chunks = await _run_retrieval(request, plan, accessible_doc_ids)
 
+        # 降级策略：如果路由器推断的 metadata_filters 导致检索为空，去掉过滤重试
+        if not retrieved_chunks and plan.metadata_filters:
+            logger.warning(
+                "Retrieval empty with inferred metadata_filters, retrying without filters",
+                filters=plan.metadata_filters,
+            )
+            plan.metadata_filters = {}
+            retrieved_chunks = await _run_retrieval(request, plan, accessible_doc_ids)
+
         logger.info(
             "Retrieval completed",
             route=plan.route,

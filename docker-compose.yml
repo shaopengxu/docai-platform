@@ -14,8 +14,8 @@ services:
     image: qdrant/qdrant:v1.12.4
     container_name: docai-qdrant
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -23,7 +23,7 @@ services:
       QDRANT__LOG_LEVEL: INFO
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      test: [ "CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -49,7 +49,7 @@ services:
       - cluster.name=docai-cluster
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: [ "CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -67,13 +67,14 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./docker/postgres/phase5_auth.sql:/docker-entrypoint-initdb.d/02_phase5_auth.sql
     environment:
       POSTGRES_DB: docai
       POSTGRES_USER: docai
       POSTGRES_PASSWORD: docai_dev_2025
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U docai -d docai"]
+      test: [ "CMD-SHELL", "pg_isready -U docai -d docai" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -88,8 +89,8 @@ services:
     image: minio/minio:latest
     container_name: docai-minio
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web Console
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web Console
     volumes:
       - minio_data:/data
     environment:
@@ -98,7 +99,7 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: [ "CMD", "mc", "ready", "local" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -118,7 +119,7 @@ services:
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -140,26 +141,10 @@ services:
         mc mb --ignore-existing docai/exports;
         echo 'MinIO buckets created successfully';
       "
-
   # ─────────────────────────────────────────────────────────────────────────
-  # Web 前端 - Next.js MVP
+  # Web 前端 - 改为本地启动 (make web-dev)
+  # 本地启动支持热重载，修改代码后立即生效
   # ─────────────────────────────────────────────────────────────────────────
-  web:
-    build:
-      context: ./web
-      dockerfile: Dockerfile
-    container_name: docai-web
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
-    restart: unless-stopped
-    depends_on:
-      - postgres
-      - qdrant
-      - elasticsearch
-      - minio
-      - redis
 
 volumes:
   qdrant_data:

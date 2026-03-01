@@ -679,13 +679,23 @@ class IngestionPipeline:
         doc_summary = ""
         if section_summaries_text_parts:
             combined_section_summaries = "\n\n".join(section_summaries_text_parts)
-            doc_summary, key_entities = await generate_doc_summary_and_entities(
+            doc_summary, key_entities, detected_doc_type = await generate_doc_summary_and_entities(
                 title, combined_section_summaries
             )
             
             if doc_summary:
                 await self._update_doc_summary_and_entities(doc_id, doc_summary, key_entities)
                 
+                # 自动设置 doc_type（如果上传时未指定）
+                if detected_doc_type:
+                    async with get_db_session() as session:
+                        await session.execute(
+                            text("UPDATE documents SET doc_type = :dt WHERE doc_id = :did AND doc_type IS NULL"),
+                            {"dt": detected_doc_type, "did": doc_id},
+                        )
+                        await session.commit()
+                    logger.info("Auto-detected doc_type", doc_type=detected_doc_type)
+
                 # 创建文档摘要 Chunk
                 dc = Chunk(
                     doc_id=doc_id,
